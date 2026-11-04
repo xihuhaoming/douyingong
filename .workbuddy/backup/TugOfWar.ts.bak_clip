@@ -1,0 +1,1212 @@
+import {
+    _decorator,
+    Component,
+    Node,
+    Button,
+    Graphics,
+    Label,
+    Color,
+    UITransform,
+    Layers,
+    view,
+    director,
+    clamp,
+    Animation,
+    AnimationState,
+    AnimationClip,
+    ProgressBar,
+    input,
+    Input,
+    EventKeyboard,
+    KeyCode,
+} from 'cc';
+
+const { ccclass, property } = _decorator;
+
+interface Layer {
+    node: Node;
+    /** 初始 local x（地台沿用它 + 背景位移量×系数） */
+    baseLocalX: number;
+    /** 位移系数 */
+    factor: number;
+    /** +1 = 左阵营，-1 = 右阵营 */
+    side: number;
+}
+
+/**
+ * 角力（Tug of War）。
+ *
+ * 左右两边各有一个「推力」数值（leftPower / rightPower），差算成推进量
+ * value ∈ [-1, 1]：>0 = 右方占优。
+ *
+ * 唯一的状态量是 **优势 tug ∈ [-1, 1]**（>0 = 右方占优），其它全部由它派生：
+ *
+ *   ① 背景位移：两张图 position.x 同向、同量移动（value > 0 一起往右，< 0 一起往左）
+ *   ② 角色帧号：镜像映射 —— 左帧 = fu × 左可用帧数，右帧 = (1 - fu) × 右可用帧数
+ *      其中 fu = (1 - tug) / 2。所以两边永远是一根绳子的两头，绝不会一边走完另一边才走到一半
+ *   ③ 使劲抖动：同相位正弦，两边一起前压、一起回（角色不能定格成一张图）
+ *   ④ 倾角 / 顿帧：整体被绳子拖着的倾斜 + 点按瞬间的放大
+ *
+ * 「倒放」只在**片段内**使用：clip 尾部收招段砍掉（usableRatio），
+ * 剩下的「松 → 紧」是连续姿态，往回走 = 被顶回去，语义成立。
+ *
+ * 能走多远**不写死**：按「每张图必须始终盖住自己那个遮罩窗口」反推出来
+ * （见 computeRange）。窗口取「屏幕可见范围 ∩ 自己的遮罩 − 中线挡住的部分」。
+ *
+ * 角色（Left_Player / Right_Player）**永远钉在镜头中央，不参与任何平移** —— 这是硬约束。
+ * 地台（Left_Land / Right_Land）默认也不动；想让它跟着背景一起平移就开 moveGroundUnits。
+ *
+ * 遮罩、中线、人物都不动 —— 中线永远在屏幕正中。
+ */
+@ccclass('TugOfWar')
+export class TugOfWar extends Component {
+    @property({ tooltip: '左方推力（初始值）' })
+    leftPower = 29994;
+
+    @property({ tooltip: '右方推力（初始值）' })
+    rightPower = 26320;
+
+    @property({ tooltip: '每点一次给该方加多少推力' })
+    powerPerTap = 900;
+
+    @property({ tooltip: '每点一次改变多少「优势」：1 = 从持平一把被拖到底。0.04 ≈ 点 25 次走完全程' })
+    tugPerTap = 0.04;
+
+    @property({ tooltip: '位移跟随速度' })
+    followSpeed = 14;
+
+    @property({ tooltip: '地台跟随系数（人物永远钉在镜头中央，不进跟随逻辑）' })
+    factorLand = 0.85;
+
+    @property({ tooltip: '地台是否跟着背景一起平移；人物永远钉在镜头中央，不归这个开关管' })
+    moveGroundUnits = true;
+
+    @property({ tooltip: '运行时自建测试按钮（开启后场景里的 ButtonLeft/ButtonRight 会被隐藏，完全不依赖场景按钮）' })
+    runtimeButtons = true;
+
+    @property({ tooltip: '按钮直径' })
+    btnSize = 148;
+
+    @property({ tooltip: '顶部「人间道 / 魔道」两个数值是否跟着推力走' })
+    bindTopScore = true;
+
+    @property({ tooltip: '顶部两条力量条是否跟着数值伸缩（各边独立满分，见 barMax）' })
+    bindTopProgress = true;
+
+    @property({ tooltip: '每条力量条各自的满格数值：10000 分 = 整条填满' })
+    barMax = 10000;
+
+    @property({ tooltip: '角色动画是否按推力方向正放/倒放' })
+    driveActorAnim = true;
+
+    // ------------------------------------------------ 拉锯表现（角力四通道）
+
+    @property({
+        tooltip: '只用 clip 前百分之多少：尾部「收招」段砍掉不用（0.78 = 用前 78%）。这是让「往回走」成立的关键',
+    })
+    usableRatio = 0.78;
+
+    @property({
+        tooltip:
+            '【数值低的一方】走到 clip 的百分之多少：0.5 = 正中间「抬腿」那一帧，1 = 走到可用段末尾。' +
+            '数值高的一方永远回到第 0 帧',
+    })
+    loseFrameRatio = 0.5;
+
+    @property({ tooltip: 'clip 帧率，用来把「帧」换算成秒（你这两个序列帧 clip 都是 60）' })
+    animFps = 60;
+
+    @property({ tooltip: '使劲抖动幅度（帧）：僵持时不能定格成一张图，靠它做出「一直在使劲」' })
+    idleJitterFrames = 1.5;
+
+    @property({ tooltip: '使劲抖动频率（次/秒）' })
+    idleJitterHz = 1.6;
+
+    @property({ tooltip: '被拖动时角色整体倾斜几度（0 = 关闭，填负数反向）。优势越大倾得越多' })
+    tiltAngle = 5;
+
+    @property({ tooltip: '点按瞬间角色放大多少（顿帧反馈，0 = 关闭）' })
+    tapPunch = 0.06;
+
+    @property({ tooltip: '演示模式：只显示中央一个「点击模拟」按钮，四个「增加/减少」按钮先不建' })
+    demoMode = true;
+
+    @property({ tooltip: '演示模式：点一次模拟推进几次力量变化（越大动得越明显）' })
+    demoStepsPerTap = 2;
+
+    @property({ tooltip: '演示模式：自动模拟的间隔（秒）。点一下「点击模拟」开始，每隔这么久变一次' })
+    demoInterval = 1.0;
+
+    @property({ tooltip: '演示模式：点「点击模拟」后是否自动一直跑（关掉则每点一次只变一下）' })
+    demoAutoRun = true;
+
+    private layers: Layer[] = [];
+    private bgLeft: Node | null = null;
+    private bgRight: Node | null = null;
+    private bgL0 = 0;
+    private bgR0 = 0;
+    /** 同向平移的余量：往右 / 往左（负数） */
+    private rangeRight = 0;
+    private rangeLeft = 0;
+
+    private value = 0;
+    private hud: Label | null = null;
+
+    /** 顶部两人间道 / 魔道的数值 */
+    private scoreL: Label | null = null;
+    private scoreR: Label | null = null;
+    private barL: ProgressBar | null = null;
+    private barR: ProgressBar | null = null;
+    /** ProgressBar 下面真正被拉伸的 Bar 精灵（兜底：自己按比例改宽度） */
+    private barNodeL: UITransform | null = null;
+    private barNodeR: UITransform | null = null;
+    /** Bar 的满格宽度（进场时抓一次，之后按比例缩） */
+    private barFullL = 0;
+    private barFullR = 0;
+    private lastScoreL = -1;
+    private lastScoreR = -1;
+    private lastBarL = -1;
+    private lastBarR = -1;
+
+    /** 两个角色的动画状态，时间由代码接管 */
+    private animL: AnimationState | null = null;
+    private animR: AnimationState | null = null;
+    /** 两个角色的节点，用来做倾角 / 顿帧 */
+    private nodeL: Node | null = null;
+    private nodeR: Node | null = null;
+    private baseScaleL = 1;
+    private baseScaleR = 1;
+    private baseAngleL = 0;
+    private baseAngleR = 0;
+
+    /**
+     * 未平滑的优势 -1..1：点按直接改它，`value` 是它平滑后的值。
+     * 初始按双方力量差折算（≈ -0.2，左方略占优），跟顶部两个数字保持一致。
+     */
+    private rawTug = clamp(
+        ((this.rightPower - this.leftPower) / Math.max(1, this.leftPower + this.rightPower)) * 3,
+        -1,
+        1,
+    );
+    /** 当前「用力程度」归一化 0~1（0 = 最松，1 = 压过顶点），只用于 HUD 显示 */
+    private progL = 0.5;
+    private progR = 0.5;
+    /** 两条 clip 各自的可用帧数（抬腿帧 = span × loseFrameRatio），HUD 用 */
+    private spanL = 1;
+    private spanR = 1;
+    /** 使劲循环的相位（秒） */
+    private poseT = 0;
+    /** 顿帧余量 0~1：被点按置 1，然后每帧衰减 */
+    private punchL = 0;
+    private punchR = 0;
+    /** 演示模式点了多少次（只用于日志编号） */
+    private demoTaps = 0;
+    /** 自动模拟是否在跑 / 上次触发到现在的累计时间 */
+    private demoAuto = false;
+    private demoTimer = 0;
+    /** 运行时 UI 的容器（挂在 UICanvas 最后一个子节点，保证在所有图层之上） */
+    private uiRoot: Node | null = null;
+    /** 「点击模拟」按钮上的文字 */
+    private demoLabel: Label | null = null;
+
+    onLoad() {
+        this.collectLayers();
+        // 运行时按钮模式下，场景按钮一律不参与（不绑定、且会在 start 里隐藏）
+        if (this.runtimeButtons) {
+            this.hideSceneButtons();
+            input.on(Input.EventType.KEY_DOWN, this.onKeyDown, this);
+        } else {
+            this.bindSceneButtons();
+        }
+    }
+
+    onDestroy() {
+        input.off(Input.EventType.KEY_DOWN, this.onKeyDown, this);
+    }
+
+    /** 桌面 / 开发者工具里用键盘测：A/D 或 ←/→（触屏设备无效，也不影响） */
+    /** 桌面 / 开发者工具里用键盘测：A/← 左加、Q 左减、D/→ 右加、E 右减 */
+    private onKeyDown(e: EventKeyboard) {
+        switch (e.keyCode) {
+            case KeyCode.KEY_A:
+            case KeyCode.ARROW_LEFT:
+                this.changePower(-1, 1);
+                break;
+            case KeyCode.KEY_Q:
+                this.changePower(-1, -1);
+                break;
+            case KeyCode.KEY_D:
+            case KeyCode.ARROW_RIGHT:
+                this.changePower(1, 1);
+                break;
+            case KeyCode.KEY_E:
+                this.changePower(1, -1);
+                break;
+            default:
+                break;
+        }
+    }
+
+    /**
+     * 放到 start：onLoad 阶段 Canvas 的 Widget 还没对齐，
+     * view.getVisibleSize() 拿到的还是设计分辨率 750x1334，会把遮罩高度算小、按钮摆错。
+     */
+    start() {
+        // 每一步单独 try —— 任何一步出错都不能把后面的步骤（行程 / 角色动画）带走。
+        // 之前就是 fitMaskHeight 抛了 TypeError，导致 computeRange、bindActorAnims 根本没执行。
+        this.step('建测试按钮', () => {
+            if (this.runtimeButtons) this.buildTestUi();
+        });
+        this.step('补遮罩高度', () => this.fitMaskHeight());
+        this.step('算背景行程', () => this.computeRange());
+        this.step('绑定顶部 UI', () => this.bindTopUi());
+        this.step('绑定角色动画', () => this.bindActorAnims());
+    }
+
+    /** 单步隔离执行：出错只打日志，不中断后续步骤 */
+    private step(tag: string, fn: () => void) {
+        try {
+            fn();
+        } catch (e) {
+            console.error('[TugOfWar] ' + tag + ' 出错（后续步骤继续执行）：', e);
+        }
+    }
+
+    // ---------------------------------------------------------------- 采集
+
+    /** 按名字递归找 —— 不要写死层级，遮罩是后来插进去的 */
+    private pick(name: string): Node | null {
+        const scene = director.getScene();
+        if (!scene) return null;
+        const walk = (n: Node): Node | null => {
+            if (n.name === name) return n;
+            for (const c of n.children) {
+                const r = walk(c);
+                if (r) return r;
+            }
+            return null;
+        };
+        return walk(scene);
+    }
+
+    /** 在指定子树里按名字找（左右各有一个 Score / ProgressBar，不能全局找） */
+    private pickIn(root: Node | null, name: string): Node | null {
+        if (!root) return null;
+        const walk = (n: Node): Node | null => {
+            if (n.name === name) return n;
+            for (const c of n.children) {
+                const r = walk(c);
+                if (r) return r;
+            }
+            return null;
+        };
+        return walk(root);
+    }
+
+    // ---------------------------------------------------------------- 顶部 UI
+
+    /** 把「人间道 / 魔道」两个数值（和力量条）接到 leftPower / rightPower */
+    private bindTopUi() {
+        this.normalizePowers();
+        const lp = this.pick('LeftPeople');
+        const rp = this.pick('RightPeople');
+        this.scoreL = this.pickIn(lp, 'Score')?.getComponent(Label) ?? null;
+        this.scoreR = this.pickIn(rp, 'Score')?.getComponent(Label) ?? null;
+
+        const pbL = this.pickIn(lp, 'ProgressBar');
+        const pbR = this.pickIn(rp, 'ProgressBar');
+        this.barL = pbL?.getComponent(ProgressBar) ?? null;
+        this.barR = pbR?.getComponent(ProgressBar) ?? null;
+
+        // 真正被拉长/缩短的是 ProgressBar 下面的 Bar 精灵，直接抓住它的 UITransform。
+        // 只靠 cc.ProgressBar 有个坑：它按自身 totalLength 算宽度，而场景里存档的
+        // totalLength 和 Bar 的实际宽度不一定一致（右边是 270 vs 308.4），
+        // 会出现「填不满」或「溢出」。所以抓一次满格宽度，之后自己按比例写宽度兜底。
+        const barNodeL = this.pickIn(pbL, 'Bar') ?? this.pickIn(lp, 'Bar');
+        const barNodeR = this.pickIn(pbR, 'Bar') ?? this.pickIn(rp, 'Bar');
+        this.barNodeL = barNodeL?.getComponent(UITransform) ?? null;
+        this.barNodeR = barNodeR?.getComponent(UITransform) ?? null;
+        this.barFullL = this.barNodeL ? this.barNodeL.width : 0;
+        this.barFullR = this.barNodeR ? this.barNodeR.width : 0;
+
+        console.log(
+            '[TugOfWar] 顶部绑定：人间道数值 ' + !!this.scoreL + ' / 魔道数值 ' + !!this.scoreR +
+                ' / 进度条组件 ' + !!this.barL + ',' + !!this.barR +
+                ' / 满格宽度 ' + this.barFullL.toFixed(0) + ',' + this.barFullR.toFixed(0),
+        );
+        this.refreshTopUi(true);
+    }
+
+    /** 数值每帧只在真变了才写，避免无谓的字符串分配 */
+    private refreshTopUi(force = false) {
+        const l = Math.round(this.leftPower);
+        const r = Math.round(this.rightPower);
+        if (this.bindTopScore) {
+            if (this.scoreL && (force || l !== this.lastScoreL)) {
+                this.scoreL.string = String(l);
+            }
+            if (this.scoreR && (force || r !== this.lastScoreR)) {
+                this.scoreR.string = String(r);
+            }
+        }
+        if (this.bindTopProgress) {
+            // 两条条**各算各的**：自己的数值 / 自己的满分（10000），互不影响。
+            // 不是「占双方总和的比例」—— 那样两边永远一长一短、加起来恒等于满格，
+            // 而这里要的是「各自打了多少血」的独立读数。
+            const cap = this.barMax > 0 ? this.barMax : 10000;
+            const rl = clamp(this.leftPower / cap, 0, 1);
+            const rr = clamp(this.rightPower / cap, 0, 1);
+            if (force || Math.abs(rl - this.lastBarL) > 0.0004) {
+                this.setBar(this.barL, this.barNodeL, this.barFullL, rl);
+            }
+            if (force || Math.abs(rr - this.lastBarR) > 0.0004) {
+                this.setBar(this.barR, this.barNodeR, this.barFullR, rr);
+            }
+            this.lastBarL = rl;
+            this.lastBarR = rr;
+        }
+        this.lastScoreL = l;
+        this.lastScoreR = r;
+    }
+
+    /**
+     * 初始数值可能超出满分（老场景里存的是 29994 / 26320）。
+     * 超过就**按比例**折进 [0, barMax] —— 两边的强弱关系保持不变，
+     * 否则一进场两条进度条就都顶满，什么都看不出来。
+     */
+    private normalizePowers() {
+        const cap = this.barMax > 0 ? this.barMax : 10000;
+        const max = Math.max(this.leftPower, this.rightPower);
+        if (max <= cap) return;
+        const k = cap / max;
+        const l0 = this.leftPower;
+        const r0 = this.rightPower;
+        this.leftPower = Math.round(this.leftPower * k);
+        this.rightPower = Math.round(this.rightPower * k);
+        console.log(
+            `[TugOfWar] 初始数值 ${l0} : ${r0} 超过单边满分 ${cap}，` +
+                `按比例折成 ${this.leftPower} : ${this.rightPower}`,
+        );
+    }
+
+    /**
+     * 把一条进度条设到 ratio（0~1）。
+     *
+     * 两条路一起走：
+     *  ① 有 cc.ProgressBar 就先校正 totalLength 再写 progress —— 让组件自己的
+     *     锚点/位置计算保持正确（它是严格从条子的一端往外长的）；
+     *  ② 不管有没有组件，都**直接**把 Bar 精灵的宽度写成 满格宽 × ratio。
+     *     这样即使组件没绑上、或者存档的 totalLength 不对，进度条也一定会动。
+     */
+    private setBar(bar: ProgressBar | null, node: UITransform | null, full: number, ratio: number) {
+        const p = clamp(ratio, 0, 1);
+        if (bar) {
+            if (full > 1 && Math.abs(bar.totalLength - full) > 0.5) {
+                bar.totalLength = full; // 存档里的 totalLength 和 Bar 实际宽度不一致时先对齐
+            }
+            bar.progress = p;
+        }
+        if (node && full > 1) {
+            // ProgressBar 只改宽度、不改高度；这里只补宽度，别把高度写坏
+            node.setContentSize(full * p, node.height);
+        }
+    }
+
+    // ---------------------------------------------------------------- 角色动画
+
+    /**
+     * 把 AnimationState 的时间接管过来：speed 归零，之后每帧用 setTime + sample
+     * 直接把「动画进度」写进去 —— 进度变大就是往前播，变小就是往后播。
+     */
+    private bindOneAnim(nodeName: string, tag: string): AnimationState | null {
+        const node = this.pick(nodeName);
+        if (!node) {
+            console.warn('[TugOfWar] 找不到角色节点：' + nodeName);
+            return null;
+        }
+        const anim = node.getComponent(Animation);
+        if (!anim) {
+            console.warn('[TugOfWar] ' + nodeName + ' 上没有 Animation 组件');
+            return null;
+        }
+        const clips = anim.clips || [];
+        const clip = anim.defaultClip || clips[0] || null;
+        if (!clip) {
+            console.warn('[TugOfWar] ' + nodeName + ' 没配动画 clip（clips=' + clips.length + '）');
+            return null;
+        }
+        // Left_Player 场景里 defaultClip 是空的，这里补上，play() 无参也能播
+        if (!anim.defaultClip) anim.defaultClip = clip;
+
+        const names = clips.map((c) => (c ? c.name : 'null')).join(',');
+        let st = anim.getState(clip.name);
+        if (!st) {
+            anim.play(clip.name);
+            st = anim.getState(clip.name);
+        }
+        if (!st) {
+            anim.play();
+            st = anim.getState(clip.name);
+        }
+        if (!st) {
+            console.error(
+                '[TugOfWar] ' + nodeName + ' 拿不到 AnimationState —— clip.name="' + clip.name +
+                    '"，defaultClip=' + (anim.defaultClip ? anim.defaultClip.name : 'null') +
+                    '，clips=[' + names + ']',
+            );
+            return null;
+        }
+        // 时间轴交给代码：speed 归零，之后只靠 setTime + sample 刷帧
+        st.speed = 0;
+        // Normal：推到末帧就停在末帧，不会绕回第 0 帧
+        st.wrapMode = AnimationClip.WrapMode.Normal;
+        console.log(
+            '[TugOfWar] ' + tag + ' 动画接管：' + clip.name + '，时长 ' + st.length.toFixed(3) +
+                's，clips=[' + names + ']',
+        );
+        return st;
+    }
+
+    private bindActorAnims() {
+        this.animL = this.bindOneAnim('Left_Player', '左侧');
+        this.animR = this.bindOneAnim('Right_Player', '右侧');
+
+        this.nodeL = this.pick('Left_Player');
+        this.nodeR = this.pick('Right_Player');
+        if (this.nodeL) {
+            this.baseScaleL = this.nodeL.scale.x;
+            this.baseAngleL = this.nodeL.angle;
+        }
+        if (this.nodeR) {
+            this.baseScaleR = this.nodeR.scale.x;
+            this.baseAngleR = this.nodeR.angle;
+        }
+
+        const fl = this.usableFrames(this.animL);
+        const fr = this.usableFrames(this.animR);
+        console.log(
+            '[TugOfWar] 拉锯就位：左可用 ' + fl.toFixed(0) + ' 帧 / 右可用 ' + fr.toFixed(0) + ' 帧' +
+                '（尾部收招砍掉 ' + (100 - this.usableRatio * 100).toFixed(0) + '%），' +
+                '一点 = ' + (this.tugPerTap * 100).toFixed(1) + '% 优势',
+        );
+    }
+
+    /** 这条 clip 真正参与拉锯的帧数（总帧数 × usableRatio） */
+    private usableFrames(st: AnimationState | null): number {
+        if (!st || !(st.length > 0)) return 0;
+        return st.length * this.animFps * clamp(this.usableRatio, 0.05, 1);
+    }
+
+    /**
+    /**
+     * progress 0→1 → 映射到 clip 的 **0 ~ usableRatio** 这一段（尾部收招不用）。
+     *
+     * 这一步是「能做到双向」的关键：只在「从松到紧」的连续姿态里滑动，
+     * 所以倒着走 = 被顶回去，语义成立；不会出现整条动画倒带那种鬼畜感。
+     *
+     * speed 已归零，只 setTime + sample，永远不自己播、不 loop。
+     */
+    private driveAnim(st: AnimationState | null, progress: number) {
+        if (!st) return;
+        const len = st.length;
+        if (!(len > 0)) return;
+        const span = len * clamp(this.usableRatio, 0.05, 1);
+        st.setTime(clamp(progress, 0, 1) * span);
+        st.sample();
+    }
+
+    private collectLayers() {
+        const bgL = this.pick('LeftBackground');
+        const bgR = this.pick('RightBackground');
+        if (bgL) {
+            this.bgLeft = bgL;
+            this.bgL0 = bgL.position.x;
+        }
+        if (bgR) {
+            this.bgRight = bgR;
+            this.bgR0 = bgR.position.x;
+        }
+
+        // 只有地台进跟随逻辑；人物永远不进，钉在中央。
+        const defs: [string, number, number][] = [
+            ['Left_Land', this.factorLand, 1],
+            ['Right_Land', this.factorLand, -1],
+        ];
+        for (const [name, factor, side] of defs) {
+            const node = this.pick(name);
+            if (!node) {
+                console.warn(`[TugOfWar] 找不到节点：${name}`);
+                continue;
+            }
+            this.layers.push({ node, baseLocalX: node.position.x, factor, side });
+        }
+
+        console.log(
+            `[TugOfWar] 背景 Left(x0=${this.bgL0.toFixed(1)}) Right(x0=${this.bgR0.toFixed(1)})，` +
+                `地台 ${this.layers.length}（人物已锁定在中线，不参与平移）`,
+        );
+    }
+
+    /**
+     * 可见区域尺寸。
+     *
+     * **千万别直接写 view.getVisibleSize()** —— 抖音小游戏运行时里 `view` 是 undefined，
+     * 一调就 `Cannot read properties of undefined (reading 'getVisibleSize')`，
+     * 直接把 start() 打断（背景不动、角色不动就是这么来的）。
+     * 这里优先用 Canvas 自己的 UITransform（Canvas 组件会把它对齐到可见区），
+     * 拿不到再尝试 view，最后兜底设计分辨率。
+     */
+    private visibleSize(): { width: number; height: number } {
+        const ut = this.node.getComponent(UITransform);
+        if (ut && ut.width > 1 && ut.height > 1) {
+            return { width: ut.width, height: ut.height };
+        }
+        try {
+            const v: any = view;
+            if (v && typeof v.getVisibleSize === 'function') {
+                const s = v.getVisibleSize();
+                if (s && s.width > 1 && s.height > 1) {
+                    return { width: s.width, height: s.height };
+                }
+            }
+        } catch (e) {
+            /* 平台不支持就忽略 */
+        }
+        return { width: 750, height: 1334 };
+    }
+
+    /**
+     * 遮罩高度必须盖住实际可见高度。
+     * 设计分辨率 1334，但 390x844 这类机器 fitHeight 之后可见高是 1588 ——
+     * 遮罩还按 1334 画的话，画面上下会被裁出黑边。
+     */
+    private fitMaskHeight() {
+        const vs = this.visibleSize();
+        const need = Math.max(vs.height + 120, 2000);
+        let changed = 0;
+        for (const name of ['LeftBgMask', 'RightBgMask']) {
+            const m = this.pick(name);
+            const ut = m && m.getComponent(UITransform);
+            if (ut && ut.height < need) {
+                ut.height = need;
+                changed++;
+            }
+        }
+        if (changed) {
+            console.log(`[TugOfWar] 遮罩高度补到 ${need.toFixed(0)}（${changed} 个，可见高 ${vs.height.toFixed(0)}）`);
+        }
+    }
+
+    /**
+     * 两张图同向平移，各自能走多远是**算**出来的，不写死数值。
+     *
+     * 硬约束是「每张图必须始终盖住自己那个遮罩窗口」——
+     * 窗口 = 屏幕可见范围 ∩ 自己的遮罩矩形，再扣掉被中线挡住的那一段
+     * （中线是另一个 Canvas 下的独立节点，图滑过界露出来的部分正好由它盖住）。
+     *
+     * 两个约束取交集，就是两张图能同步走的量：
+     *   rangeRight ≥ 0（往右最多多少）、rangeLeft ≤ 0（往左最多多少）。
+     */
+    private computeRange() {
+        if (!this.bgLeft || !this.bgRight) return;
+        const lSpan = this.spanX(this.bgLeft);
+        const rSpan = this.spanX(this.bgRight);
+        if (!lSpan || !rSpan) {
+            console.warn('[TugOfWar] 背景节点缺 UITransform，算不了行程');
+            return;
+        }
+
+        const vs = this.visibleSize();
+        const ccx = this.chainX(this.node); // Canvas 中心（场景根坐标）
+        const visL = ccx - vs.width / 2;
+        const visR = ccx + vs.width / 2;
+
+        const lineSpan = this.spanX(this.pick('CenterLine'));
+        const lmSpan = this.spanX(this.pick('LeftBgMask'));
+        const rmSpan = this.spanX(this.pick('RightBgMask'));
+
+        // 左图要盖到的右边界 / 右图要盖到的左边界（各取「遮罩边」和「中线边」里更靠外的那个）
+        let seamL = Math.min(lmSpan ? lmSpan[1] : ccx, lineSpan ? lineSpan[0] : ccx);
+        let seamR = Math.max(rmSpan ? rmSpan[0] : ccx, lineSpan ? lineSpan[1] : ccx);
+        seamL = Math.max(seamL, visL);
+        seamR = Math.min(seamR, visR);
+
+        // 往右：左图左缘不能落进屏幕、右图左缘不能越过 seamR
+        const maxD = Math.min(visL - lSpan[0], seamR - rSpan[0]);
+        // 往左：左图右缘不能越过 seamL、右图右缘不能离开屏幕
+        const minD = Math.max(seamL - lSpan[1], visR - rSpan[1]);
+
+        this.rangeRight = Math.max(0, maxD);
+        this.rangeLeft = Math.min(0, minD);
+
+        // 兜底：算不出行程（遮罩 / 中线节点缺失、尺寸为 0）就给个默认值，
+        // 保证测试时背景至少能动起来，不至于「点了没反应」查不出是绑定的问题还是行程的问题。
+        if (this.rangeRight < 1 && this.rangeLeft > -1) {
+            console.warn('[TugOfWar] 行程算出来是 0，暂用默认 ±120px 兜底');
+            this.rangeRight = 120;
+            this.rangeLeft = -120;
+        }
+
+        const goRight = this.rangeRight;
+        const goLeft = -this.rangeLeft;
+        const mid = (goRight + goLeft) / 2;
+        // 两张图一起往左挪这么多，往右/往左的余量正好相等
+        const shift = (goLeft - goRight) / 2;
+        let advice = '';
+        if (shift > 2) {
+            advice =
+                '  两张图整体往左挪 ' + shift.toFixed(0) + 'px，两边就各能走 ' + mid.toFixed(0) + 'px';
+        } else if (shift < -2) {
+            advice =
+                '  两张图整体往右挪 ' + (-shift).toFixed(0) + 'px，两边就各能走 ' + mid.toFixed(0) + 'px';
+        }
+
+        console.log(
+            '[TugOfWar] 行程 往右 ' + goRight.toFixed(1) + ' / 往左 ' + goLeft.toFixed(1) + 'px' +
+                '  |  左图 [' + lSpan[0].toFixed(0) + ',' + lSpan[1].toFixed(0) + ']' +
+                ' 右图 [' + rSpan[0].toFixed(0) + ',' + rSpan[1].toFixed(0) + ']' +
+                ' 中线 [' + (lineSpan ? lineSpan[0].toFixed(0) + ',' + lineSpan[1].toFixed(0) : '无') + ']' +
+                ' 可视 [' + visL.toFixed(0) + ',' + visR.toFixed(0) + ']',
+        );
+        if (advice) console.warn('[TugOfWar]' + advice);
+    }
+
+    /**
+     * 节点原点在**场景根坐标系**下的 x（沿父链一路加到根，含父级缩放）。
+     *
+     * 注意别在名为 Canvas 的节点上停：中线 CenterLine 挂在 UICanvas 下，
+     * 和主 Canvas 是兄弟节点，停在 Canvas 会让两套坐标系混用、算出鬼数字。
+     */
+    private chainX(node: Node | null): number {
+        const stack: Node[] = [];
+        let n: Node | null = node;
+        while (n && n.parent) {
+            stack.push(n);
+            n = n.parent;
+        }
+        let x = 0;
+        let s = 1;
+        for (let i = stack.length - 1; i >= 0; i--) {
+            const m = stack[i];
+            x += m.position.x * s;
+            s *= m.scale.x;
+        }
+        return x;
+    }
+
+    /** 节点在场景根坐标系 x 轴上的 [左缘, 右缘]；节点缺失/无 UITransform 返回 null */
+    private spanX(node: Node | null): [number, number] | null {
+        if (!node) return null;
+        const ut = node.getComponent(UITransform);
+        if (!ut) return null;
+        let s = 1;
+        let n: Node | null = node;
+        while (n) {
+            s *= n.scale.x;
+            n = n.parent;
+        }
+        const cx = this.chainX(node);
+        const w = ut.width * s;
+        const ax = ut.anchorX;
+        return [cx - w * ax, cx + w * (1 - ax)];
+    }
+
+    // ---------------------------------------------------------------- 按钮
+
+    /** 只给「不用运行时按钮」的老模式用 */
+    private bindSceneButtons() {
+        const l = this.pick('ButtonLeft');
+        const r = this.pick('ButtonRight');
+        if (l) l.on(Button.EventType.CLICK, () => this.changePower(-1, 1), this);
+        if (r) r.on(Button.EventType.CLICK, () => this.changePower(1, 1), this);
+        console.log(`[TugOfWar] 场景按钮：左 ${!!l}，右 ${!!r}`);
+    }
+
+    /**
+     * 把场景里那套（Cocos 编辑器手搭的）按钮隐藏掉。
+     *
+     * 它们挂在别的节点上、还带着一堆已经丢失的脚本组件，点击链路不可靠；
+     * 这里直接 active=false，连触摸都收不到，不会再抢事件。
+     */
+    private hideSceneButtons(silent = false) {
+        let n = 0;
+        for (const name of ['ButtonLeft', 'ButtonRight']) {
+            const node = this.pick(name);
+            if (node) {
+                node.active = false;
+                n++;
+            }
+        }
+        if (!silent) {
+            console.log(`[TugOfWar] 已隐藏场景按钮 ${n} 个（改用运行时自建按钮）`);
+        }
+    }
+
+    /** Canvas 的 UITransform 尺寸；拿不到就用 visibleSize 兜底 */
+    private uiSize(): { w: number; h: number } {
+        const s = this.visibleSize();
+        return { w: s.width, h: s.height };
+    }
+
+    /**
+     * 运行时 UI 挂到哪个节点下。
+     *
+     * 场景里有**两个** Canvas：
+     *   `Canvas`   —— 背景 / 人物，TugOfWar 就挂在它身上
+     *   `UICanvas` —— CenterLine / TopUITool / BottomTestBtn
+     * 两者是兄弟节点，UICanvas 在节点树里更靠后，所以 **UICanvas 整棵子树渲染在 Canvas 之上**。
+     * 按钮如果挂在 Canvas 下，就一定会被 UICanvas 里的中线盖住 —— 这就是「按钮被中间线挡着」的根因。
+     * 这里优先挂到 UICanvas 的最后一个子节点，拿不到才退回自己。
+     */
+    private findUiHost(): Node {
+        const scene = this.node.scene;
+        if (scene) {
+            const ui = scene.getChildByName('UICanvas');
+            if (ui && ui !== this.node) return ui;
+        }
+        return this.node;
+    }
+
+    private buildTestUi() {
+        // 再兜一次：start 阶段整棵树已经激活完毕，确保场景按钮确实被关掉
+        this.hideSceneButtons(true);
+
+        // 所有运行时 UI 统一放进一个容器，挂到「最上层」的 Canvas 里
+        const host = this.findUiHost();
+        const root = new Node('RuntimeUi');
+        root.layer = Layers.Enum.UI_2D;
+        host.addChild(root);
+        const { w, h } = this.uiSize();
+        const rt = root.addComponent(UITransform);
+        rt.setContentSize(w, h);
+        rt.setAnchorPoint(0.5, 0.5);
+        // 必须是宿主节点的最后一个子节点，否则会被同层的 CenterLine 盖住
+        root.setSiblingIndex(host.children.length - 1);
+        this.uiRoot = root;
+
+        const halfH = h / 2;
+        let hudY: number;
+
+        if (this.demoMode) {
+            // 演示模式：底部正中一个「点击模拟」按钮，四个增减按钮不建
+            const by = -halfH + 200;
+            this.demoLabel = this.makeRectButton(
+                'TestBtnDemo',
+                0,
+                by,
+                360,
+                104,
+                '点击模拟',
+                new Color(56, 132, 214, 245),
+                () => this.toggleDemo(),
+            );
+            hudY = by + 52 + 54;
+            console.log(
+                `[TugOfWar] 演示模式：中央「点击模拟」按钮 @ y=${by.toFixed(0)}，` +
+                    `宿主 ${host.name}（第 ${root.getSiblingIndex() + 1}/${host.children.length} 层，最上）`,
+            );
+        } else {
+            const r = this.btnSize / 2;
+            // 每边两行：下面一行「增加」，上面一行「减少」
+            const yAdd = -halfH + 140 + r * 0.35;
+            const ySub = yAdd + this.btnSize + 26;
+            const dx = w / 2 - 130;
+
+            // 左方：橙色调；右方：紫色调。减少按钮整体压暗，一眼能区分加减
+            this.makeButton('TestBtnLeftAdd', -dx, yAdd, '增加', new Color(222, 152, 52, 245), () => this.changePower(-1, 1));
+            this.makeButton('TestBtnLeftSub', -dx, ySub, '减少', new Color(122, 92, 58, 235), () => this.changePower(-1, -1));
+            this.makeButton('TestBtnRightAdd', dx, yAdd, '增加', new Color(126, 84, 200, 245), () => this.changePower(1, 1));
+            this.makeButton('TestBtnRightSub', dx, ySub, '减少', new Color(74, 62, 116, 235), () => this.changePower(1, -1));
+            hudY = ySub + r + 52;
+            console.log(
+                `[TugOfWar] 手动模式：4 个增减按钮就位，画布 ${w.toFixed(0)}x${h.toFixed(0)}，` +
+                    `增加行 y=${yAdd.toFixed(0)} / 减少行 y=${ySub.toFixed(0)}`,
+            );
+        }
+
+        const hudNode = new Node('HudText');
+        hudNode.layer = Layers.Enum.UI_2D;
+        (this.uiRoot || this.node).addChild(hudNode);
+        hudNode.setPosition(0, hudY, 0);
+        const hut = hudNode.addComponent(UITransform);
+        hut.setContentSize(700, 60);
+        const hud = hudNode.addComponent(Label);
+        hud.string = '';
+        hud.fontSize = 20;
+        hud.lineHeight = 26;
+        hud.horizontalAlign = Label.HorizontalAlign.CENTER;
+        hud.verticalAlign = Label.VerticalAlign.CENTER;
+        hud.color = new Color(255, 255, 255, 210);
+        hud.enableOutline = true;
+        hud.outlineColor = new Color(0, 0, 0, 200);
+        hud.outlineWidth = 2;
+        this.hud = hud;
+        this.refreshHud(this.bgL0, this.bgR0);
+    }
+
+    /**
+     * 自建圆形按钮。
+     *
+     * 用手写 touch 事件而不是 cc.Button 的 clickEvents —— 场景按钮失效的根因就是
+     * 「组件丢失 → 绑定不执行」，这里把整条链路都捏在自己手里，不碰任何场景配置。
+     */
+    private makeButton(name: string, x: number, y: number, text: string, color: Color, onTap: () => void) {
+        const parent = this.uiRoot || this.node;
+        const btn = new Node(name);
+        btn.layer = Layers.Enum.UI_2D;
+        parent.addChild(btn);
+        btn.setPosition(x, y, 0);
+        btn.setSiblingIndex(parent.children.length - 1);
+
+        const ut = btn.addComponent(UITransform);
+        ut.setContentSize(this.btnSize, this.btnSize);
+        ut.setAnchorPoint(0.5, 0.5);
+
+        const g = btn.addComponent(Graphics);
+        const r = this.btnSize / 2;
+        g.fillColor = color;
+        g.circle(0, 0, r);
+        g.fill();
+        g.lineWidth = 5;
+        g.strokeColor = new Color(255, 255, 255, 200);
+        g.circle(0, 0, r - 3);
+        g.stroke();
+
+        const labelNode = new Node('Label');
+        labelNode.layer = Layers.Enum.UI_2D;
+        btn.addChild(labelNode);
+        const lt = labelNode.addComponent(UITransform);
+        lt.setContentSize(this.btnSize, 44);
+        const lab = labelNode.addComponent(Label);
+        lab.string = text;
+        lab.fontSize = 36;
+        lab.lineHeight = 40;
+        lab.horizontalAlign = Label.HorizontalAlign.CENTER;
+        lab.verticalAlign = Label.VerticalAlign.CENTER;
+        lab.color = new Color(255, 255, 255, 255);
+        lab.enableOutline = true;
+        lab.outlineColor = new Color(40, 20, 0, 200);
+        lab.outlineWidth = 2;
+
+        // 按下立刻加力（手感最灵），抬起/滑出复原
+        const down = () => {
+            btn.setScale(0.92, 0.92, 1);
+            onTap();
+        };
+        const up = () => btn.setScale(1, 1, 1);
+        btn.on(Node.EventType.TOUCH_START, down, this);
+        btn.on(Node.EventType.TOUCH_END, up, this);
+        btn.on(Node.EventType.TOUCH_CANCEL, up, this);
+
+        console.log(`[TugOfWar] 运行时按钮 ${name} @ (${x.toFixed(0)}, ${y.toFixed(0)})`);
+    }
+
+    /** 自建圆角矩形按钮（演示模式中央那颗「点击模拟」） */
+    private makeRectButton(
+        name: string,
+        x: number,
+        y: number,
+        bw: number,
+        bh: number,
+        text: string,
+        color: Color,
+        onTap: () => void,
+    ): Label {
+        const parent = this.uiRoot || this.node;
+        const btn = new Node(name);
+        btn.layer = Layers.Enum.UI_2D;
+        parent.addChild(btn);
+        btn.setPosition(x, y, 0);
+        btn.setSiblingIndex(parent.children.length - 1);
+
+        const ut = btn.addComponent(UITransform);
+        ut.setContentSize(bw, bh);
+        ut.setAnchorPoint(0.5, 0.5);
+
+        const g = btn.addComponent(Graphics);
+        g.fillColor = color;
+        g.roundRect(-bw / 2, -bh / 2, bw, bh, bh / 2);
+        g.fill();
+        g.lineWidth = 5;
+        g.strokeColor = new Color(255, 255, 255, 200);
+        g.roundRect(-bw / 2 + 3, -bh / 2 + 3, bw - 6, bh - 6, (bh - 6) / 2);
+        g.stroke();
+
+        const labelNode = new Node('Label');
+        labelNode.layer = Layers.Enum.UI_2D;
+        btn.addChild(labelNode);
+        const lt = labelNode.addComponent(UITransform);
+        lt.setContentSize(bw, bh);
+        const lab = labelNode.addComponent(Label);
+        lab.string = text;
+        lab.fontSize = 42;
+        lab.lineHeight = 48;
+        lab.horizontalAlign = Label.HorizontalAlign.CENTER;
+        lab.verticalAlign = Label.VerticalAlign.CENTER;
+        lab.color = new Color(255, 255, 255, 255);
+        lab.enableOutline = true;
+        lab.outlineColor = new Color(20, 40, 70, 200);
+        lab.outlineWidth = 2;
+
+        const down = () => {
+            btn.setScale(0.94, 0.94, 1);
+            onTap();
+        };
+        const up = () => btn.setScale(1, 1, 1);
+        btn.on(Node.EventType.TOUCH_START, down, this);
+        btn.on(Node.EventType.TOUCH_END, up, this);
+        btn.on(Node.EventType.TOUCH_CANCEL, up, this);
+
+        console.log(`[TugOfWar] 运行时按钮 ${name} @ (${x.toFixed(0)}, ${y.toFixed(0)})  ${bw}x${bh}`);
+        return lab;
+    }
+
+    // ---------------------------------------------------------------- 逻辑
+
+    /**
+     * 改某一方的力量。四个按钮走同一条路。
+     *
+     * side：-1 = 左方，+1 = 右方
+     * sign：+1 = 增加（按钮「增加」），-1 = 减少（按钮「减少」）
+     *
+     * 只做两件事：
+     *   1. 改分数 leftPower / rightPower（顶部两个数字）
+     *   2. 改 rawTug（+1 = 右方占优）—— 这才是驱动「背景位移 + 两边人物帧号」的唯一来源
+     * 所以「减少左方」与「增加右方」在表现上完全等价，不会有两套逻辑。
+     */
+    private changePower(side: number, sign: number) {
+        const cap = this.barMax > 0 ? this.barMax : 10000;
+        const delta = this.powerPerTap * sign;
+        const before = side > 0 ? this.rightPower : this.leftPower;
+        const after = clamp(before + delta, 0, cap);
+        const realDelta = after - before;
+        if (Math.abs(realDelta) < 1e-6) return; // 已经是 0 或已经满格，点不动
+        if (side > 0) {
+            this.rightPower = after;
+        } else {
+            this.leftPower = after;
+        }
+        // 右加 → +，右减 → -，左加 → -，左减 → +
+        // 按**实际变化量**折算：贴着 0 或满格时只动了一点，动画也跟着只走一点，不会数值没变动画却动了
+        const ratio = realDelta / (this.powerPerTap || 1);
+        this.rawTug = clamp(this.rawTug + this.tugPerTap * ratio * side, -1, 1);
+        // 顿帧：被点的那一方顿一下
+        if (side > 0) {
+            this.punchR = 1;
+        } else {
+            this.punchL = 1;
+        }
+    }
+
+    /**
+     * 演示用：模拟一次「双方积分的增减」，让顶部分数、背景位移、两边人物一起动。
+     *
+     * 规则：
+     *   - 优势推到 0.75 以上就自动改为另一方加力，把绳标推回来 ——
+     *     否则一路顶到 ±1 就卡死在两端，什么都不会动了
+     *   - 中间地带随机挑一方；1/4 概率走「减少」，把另一条分支也演示到
+     *   - 该方分数已经是 0 时，减少无效 → 自动翻成增加
+     */
+    private simulateOnce() {
+        let side: number;
+        let sign: number;
+
+        if (this.rawTug > 0.75) {
+            side = -1;
+            sign = 1; // 右方快赢了 → 左方加力
+        } else if (this.rawTug < -0.75) {
+            side = 1;
+            sign = 1; // 左方快赢了 → 右方加力
+        } else {
+            side = Math.random() < 0.5 ? -1 : 1;
+            sign = Math.random() < 0.25 ? -1 : 1;
+        }
+
+        // 选一个**真能生效**的动作：已经是 0 减不动、已经满格加不动，
+        // 这时换成反方向或换另一边（否则模拟会在两端空转，画面看着像卡住）
+        const cap = this.barMax > 0 ? this.barMax : 10000;
+        const val = (sd: number) => (sd > 0 ? this.rightPower : this.leftPower);
+        const canMove = (sd: number, sg: number) =>
+            Math.abs(clamp(val(sd) + this.powerPerTap * sg, 0, cap) - val(sd)) > 1e-6;
+        if (!canMove(side, sign)) {
+            const alt: Array<[number, number]> = [
+                [-side, sign],
+                [side, -sign],
+                [-side, -sign],
+            ];
+            const pick = alt.find(([sd, sg]) => canMove(sd, sg));
+            if (!pick) return; // 两边都到极限，这一拍跳过
+            side = pick[0];
+            sign = pick[1];
+        }
+
+        const steps = Math.max(1, Math.round(this.demoStepsPerTap));
+        for (let i = 0; i < steps; i++) {
+            this.changePower(side, sign);
+        }
+
+        console.log(
+            `[TugOfWar] 模拟 #${++this.demoTaps}：${side > 0 ? '右方' : '左方'}${sign > 0 ? '增加' : '减少'} ` +
+                `→ 优势 ${(this.rawTug * 100).toFixed(0)}%（左 ${this.leftPower} : 右 ${this.rightPower}）`,
+        );
+    }
+
+    /**
+     * 「点击模拟」按钮：开始 / 停止**自动**模拟。
+     *
+     * 开起来之后每 demoInterval 秒自动变一次，不用一直点；再点一下停止。
+     * 按钮文字跟着状态变（点击模拟 / 停止模拟），一眼能看出现在是不是在跑。
+     */
+    private toggleDemo() {
+        if (!this.demoAutoRun) {
+            this.simulateOnce();
+            return;
+        }
+        this.demoAuto = !this.demoAuto;
+        this.demoTimer = 0;
+        if (this.demoAuto) {
+            this.simulateOnce(); // 立刻先动一下，不用等满一个间隔
+        }
+        if (this.demoLabel) {
+            this.demoLabel.string = this.demoAuto ? '停止模拟' : '点击模拟';
+        }
+        console.log(
+            `[TugOfWar] 自动模拟 ${this.demoAuto ? '开始' : '停止'}（每 ${this.demoInterval}s 一次）`,
+        );
+    }
+
+    /** 优势（未平滑） */
+    private computeValue(): number {
+        return clamp(this.rawTug, -1, 1);
+    }
+
+    /**
+     * 两个角色每一帧的姿态 —— 拉锯的核心。
+     *
+     * **数值高的一方回到第 0 帧（等于倒放到第一帧），数值低的一方被拖着往前走到「抬腿帧」。**
+     *
+     *   wl  = (1 - tug) / 2            左方占优程度 0~1（tug = -1 左方压到底 → wl = 1）
+     *   左帧 = 左可用帧数 × loseFrameRatio × (1 - wl)    ← 左数值高时 wl→1，左帧 → 0
+     *   右帧 = 右可用帧数 × loseFrameRatio × wl          ← 右数值高时 wl→0，右帧 → 0
+     *
+     * 也就是说占优方始终贴着第 0 帧（往后倒到第一帧），劣势方停在 clip 中段那个抬腿姿势上；
+     * tug 从 -1 连续滑到 +1，两边就一路对拉过来 —— 永远是同一根绳子的两头，不会脱节。
+     *
+     * 再叠一层同相位的正弦抖动：占优方已经贴在第 0 帧，只能往前顶一点再弹回（取绝对值），
+     * 劣势方可以正反晃 —— 两边一起喘，但都不会穿出可用段。只有定格帧的话，角色会僵成一张图。
+     */
+    private syncActorPose(dt: number) {
+        const tug = clamp(this.value, -1, 1);
+
+        this.punchL = Math.max(0, this.punchL - dt * 14);
+        this.punchR = Math.max(0, this.punchR - dt * 14);
+
+        if (this.driveActorAnim) {
+            const wl = (1 - tug) / 2;
+            const spanL = Math.max(1, this.usableFrames(this.animL));
+            const spanR = Math.max(1, this.usableFrames(this.animR));
+            this.spanL = spanL;
+            this.spanR = spanR;
+
+            // 劣势方要走到的那一帧（抬腿）：可用帧数 × loseFrameRatio
+            const push = clamp(this.loseFrameRatio, 0, 1);
+            const frameL = spanL * push * (1 - wl);
+            const frameR = spanR * push * wl;
+
+            // 使劲抖动：两边**同相位、只往前顶**（0 ~ +amp），不往回走。
+            // 这样贴在第 0 帧的占优方也有「还在使劲」的呼吸感，不会僵成一张图；
+            // 又不会和「往回 = 被顶回去」的语义打架，也不会在 wl=0.5 附近跳变。
+            const amp = this.idleJitterFrames * (1 - Math.abs(tug) * 0.6);
+            const j = amp > 0 ? amp * (0.5 + 0.5 * Math.sin(this.poseT * Math.PI * 2 * this.idleJitterHz)) : 0;
+
+            this.progL = clamp(frameL + j, 0, spanL) / spanL;
+            this.progR = clamp(frameR + j, 0, spanR) / spanR;
+
+            this.driveAnim(this.animL, this.progL);
+            this.driveAnim(this.animR, this.progR);
+        }
+
+        this.applyActorFx(this.nodeL, this.baseScaleL, this.baseAngleL, tug, this.punchL);
+        this.applyActorFx(this.nodeR, this.baseScaleR, this.baseAngleR, tug, this.punchR);
+    }
+
+    /** 倾角（整体被绳子拖着）+ 顿帧缩放 */
+    private applyActorFx(node: Node | null, baseScale: number, baseAngle: number, tug: number, punch: number) {
+        if (!node) return;
+        if (this.tiltAngle !== 0) {
+            // Cocos 3.x 的 angle 逆时针为正：左方占优（tug<0）时整体向左倾
+            node.angle = baseAngle - this.tiltAngle * tug;
+        }
+        if (this.tapPunch !== 0) {
+            const s = baseScale * (1 + this.tapPunch * punch);
+            node.setScale(s, s, node.scale.z);
+        }
+    }
+
+    update(dt: number) {
+        const target = this.computeValue();
+        const k = 1 - Math.exp(-dt * this.followSpeed);
+        this.value += (target - this.value) * k;
+        if (Math.abs(target - this.value) < 1e-4) {
+            this.value = target;
+        }
+
+        // 顶部数值（人间道 / 魔道）跟着推力走
+        this.refreshTopUi();
+
+        // 演示模式：按固定间隔自动推进，不用一直点
+        if (this.demoAuto) {
+            this.demoTimer += dt;
+            if (this.demoTimer >= Math.max(0.1, this.demoInterval)) {
+                this.demoTimer = 0;
+                this.simulateOnce();
+            }
+        }
+
+        // 角色：姿态由「优势」连续映射（每帧都在算，才能做出使劲抖动）
+        this.poseT += dt;
+        this.syncActorPose(dt);
+
+        // 两张图同向、同量平移；能走多远取两张图余量的交集
+        const d = this.value >= 0 ? this.value * this.rangeRight : -this.value * this.rangeLeft;
+        const lx = this.bgL0 + d;
+        const rx = this.bgR0 + d;
+        if (this.bgLeft) {
+            const p = this.bgLeft.position;
+            this.bgLeft.setPosition(lx, p.y, p.z);
+        }
+        if (this.bgRight) {
+            const p = this.bgRight.position;
+            this.bgRight.setPosition(rx, p.y, p.z);
+        }
+
+        // 地台/人物跟着各自阵营的背景走，系数缩小
+        const dL = (lx - this.bgL0) * (this.moveGroundUnits ? 1 : 0);
+        const dR = (rx - this.bgR0) * (this.moveGroundUnits ? 1 : 0);
+        for (const l of this.layers) {
+            const p = l.node.position;
+            const d = l.side > 0 ? dL : dR;
+            l.node.setPosition(l.baseLocalX + d * l.factor, p.y, p.z);
+        }
+
+        this.refreshHud(lx, rx);
+    }
+
+    private refreshHud(lx: number, rx: number) {
+        if (!this.hud) return;
+        const pct = Math.abs(this.value) * 100;
+        const side =
+            (this.value > 0.001 ? '右方推进' : this.value < -0.001 ? '左方推进' : '持平') +
+            (this.demoAuto ? '  ▶ 自动模拟中' : '');
+        const range =
+            '行程 往右 ' + this.rangeRight.toFixed(0) + ' / 往左 ' + (-this.rangeLeft).toFixed(0) + 'px';
+        // 帧号：数值高的一方贴在第 0 帧，数值低的一方停在「抬腿帧」（span × loseFrameRatio）
+        const frame =
+            '帧 左 ' + (this.progL * this.spanL).toFixed(0) + '/' + this.spanL.toFixed(0) +
+            ' · 右 ' + (this.progR * this.spanR).toFixed(0) + '/' + this.spanR.toFixed(0);
+        this.hud.string =
+            `左 ${this.leftPower} : 右 ${this.rightPower}\n` +
+            `${side} ${pct.toFixed(0)}%   ${frame}\n` +
+            range;
+    }
+}
