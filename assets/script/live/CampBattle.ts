@@ -144,7 +144,14 @@ export class CampBattle extends Component {
     @property({ tooltip: '超过这个距离就不出手（px）' })
     attackRange = 700;
 
-    @property({ tooltip: '每边场上最多多少个兵' })
+    @property({
+        tooltip: '不限制单边兵力：勾上就忽略 maxAlivePerSide，格子满了自动往后加行，一直出',
+    })
+    unlimited = true;
+
+    @property({
+        tooltip: '每边场上最多多少个兵（unlimited 勾着时无效）。填 0 也等于不限制',
+    })
     maxAlivePerSide = 15;
 
     @property({ tooltip: '开局每边先出几个兵（演示用，0 = 空场开局）' })
@@ -249,6 +256,10 @@ export class CampBattle extends Component {
 
     /** 每一侧的站位占用表：下标 = 站位编号，值 = 站在这里的兵 */
     private slotUnits: { [side: number]: (Fighter | null)[] } = { '-1': [], '1': [] };
+    /** 每一侧当前开了多少格子（无限模式会在满了以后自动加行） */
+    private slotCap: { [side: number]: number } = { '-1': 0, '1': 0 };
+    /** 阵型第 0 行的世界 y，开局定一次；之后加行只往下长，老站位不动 */
+    private rowTopY: number | null = null;
     /** 站位满了只警告一次 */
     private slotFullWarned = false;
     /** 复用同一个 Vec3 算站位，避免每帧 new */
@@ -269,11 +280,16 @@ export class CampBattle extends Component {
 
     start() {
         const cap = this.slotCount();
-        if (cap < this.maxAlivePerSide) {
+        // 初始格子数 = formationCols x formationRows；后面不够会自动加行
+        this.slotCap['-1'] = cap;
+        this.slotCap['1'] = cap;
+        this.rowTopY = null;
+
+        if (!this.unlimited && this.maxAlivePerSide > 0 && cap < this.maxAlivePerSide) {
             console.warn(
-                `[CampBattle] 阵型只有 ${cap} 个站位（${this.formationCols}列 x ${this.formationRows}行），` +
-                    `但 maxAlivePerSide = ${this.maxAlivePerSide}，多出来的兵出不来。` +
-                    `要么加列/行数，要么把 maxAlivePerSide 调到 ${cap}。`,
+                `[CampBattle] 阵型初始只有 ${cap} 个站位（${this.formationCols}列 x ${this.formationRows}行），` +
+                    `maxAlivePerSide = ${this.maxAlivePerSide}，超出时会自动往后加行。` +
+                    `想让阵型长度固定，把 maxAlivePerSide 调到 ${cap} 或更小。`,
             );
         }
         const n = Math.floor(this.initialSoldiersPerSide);
@@ -430,17 +446,20 @@ export class CampBattle extends Component {
 
     /**
      * 第 index 个站位的世界坐标。
-     * 编号规则：先按列（离空气墙由近到远），每列 formationRows 个纵向排开。
-     * 所以 index 0 ~ rows-1 就是最前排，后面的列依次往自己后方退。
+     * 编号规则（行优先）：index = row * cols + col，
+     *   col 0 = 最前排（贴空气墙），越往后越大；row 0 = 最上面那一行。
+     * 这样同一行的兵编号连续，补位时只在行内往前顶，纵向不会乱跳。
      *
      * 返回的是复用的临时 Vec3，拿到后请立刻取值，别存着跨帧用。
      */
     private slotPos(side: number, index: number): Vec3 {
         const cols = Math.max(1, Math.floor(this.formationCols));
         const rows = Math.max(1, Math.floor(this.formationRows));
-        const i = clamp(index, 0, cols * rows - 1);
-        const col = Math.floor(i / rows);
-        const row = i % rows;
+        const spacingY = Math.max(1, this.rowSpacing);
+
+        const i = Math.max(0, index);
+        const row = Math.floor(i / cols);
+        const col = i % cols;
 
         const wallX = this.wallWorldX();
         const r = Math.max(1, this.unitRadius);
@@ -449,37 +468,97 @@ export class CampBattle extends Component {
         const frontX = wallX + side * (r - halfOverlap);
         const x = frontX + side * col * Math.max(1, this.colSpacing);
 
-        const centerY = this.node.worldPosition.y + this.formationCenterY;
-        const y = centerY + (row - (rows - 1) / 2) * Math.max(1, this.rowSpacing);
+        // 第 0 行按「formationCenterY 上下居中」定一次，之后新增行只往下一行行加，
+        // 已经在场上的兵不会被挪位置
+        if (this.rowTopY === null) {
+            this.rowTopY = this.node.worldPosition.y + this.formationCenterY + ((rows - 1) / 2) * spacingY;
+        }
+        const y = this.rowTopY - row * spacingY;
         return this.tmpPos.set(x, y, 0);
     }
 
-    /** 找一个离落点最近的空站位；满了返回 -1 */
+    /**
+     * 找一个离落点最近的空站位。
+     * 无限模式（maxAlivePerSide <= 0）下，格子用完了会往后加一行再找；
+     * 有限模式满了返回 -1。
+     */
     private allocSlot(side: number, at: Vec3): number {
         const arr = this.slotUnits[side] || (this.slotUnits[side] = []);
-        const cap = this.slotCount();
-        while (arr.length < cap) arr.push(null);
+        const cols = Math.max(1, Math.floor(this.formationCols));
+        const unlimited = this.unlimited || this.maxAlivePerSide <= 0;
 
-        let best = -1;
-        let bestDist = Infinity;
-        for (let i = 0; i < cap; i++) {
-            if (arr[i]) continue;
-            const p = this.slotPos(side, i);
-            const dx = p.x - at.x;
-            const dy = p.y - at.y;
-            const d = dx * dx + dy * dy;
-            if (d < bestDist) {
-                bestDist = d;
-                best = i;
+        // 最多加 64 行，防止配置异常时死循环
+        for (let grow = 0; grow < 64; grow++) {
+            const cap = Math.max(this.slotCap[side], cols);
+            this.slotCap[side] = cap;
+            while (arr.length < cap) arr.push(null);
+
+            let best = -1;
+            let bestDist = Infinity;
+            for (let i = 0; i < cap; i++) {
+                if (arr[i]) continue;
+                const p = this.slotPos(side, i);
+                const dx = p.x - at.x;
+                const dy = p.y - at.y;
+                const d = dx * dx + dy * dy;
+                if (d < bestDist) {
+                    bestDist = d;
+                    best = i;
+                }
             }
+            if (best >= 0) return best;
+            if (!unlimited) return -1;
+
+            this.slotCap[side] = cap + cols; // 加一行
         }
-        return best;
+        return -1;
     }
 
     /** 兵死了 / 被回收，把站位让出来 */
     private freeSlot(f: Fighter) {
         const arr = this.slotUnits[f.side];
         if (arr && arr[f.slot] === f) arr[f.slot] = null;
+    }
+
+    /**
+     * 补位：把同一行里还活着的兵，从前往后重新排成 0、1、2… 号格。
+     * 只在「本行」内递补，所以兵的纵向位置不会跳，只是横向往前顶一格，
+     * 空出来的位置永远留在最后一列（也就是队尾）。
+     */
+    private compactSide(side: number) {
+        const cols = Math.max(1, Math.floor(this.formationCols));
+        const list = this.rows[side];
+
+        // 容量要覆盖「当前开了多少格」和「场上兵的最大编号」，加过行的话不能缩回去
+        let need = Math.max(this.slotCap[side], cols);
+        for (const f of list) need = Math.max(need, f.slot + 1);
+        need = Math.ceil(need / cols) * cols;
+        this.slotCap[side] = need;
+
+        const rows = need / cols;
+        const next: (Fighter | null)[] = new Array(need).fill(null);
+        if (!list.length) {
+            this.slotUnits[side] = next;
+            return;
+        }
+
+        for (let r = 0; r < rows; r++) {
+            // 先收集这一行现有的兵，再按原来的列号从前往后重排
+            const inRow: Fighter[] = [];
+            for (const f of list) {
+                if (Math.floor(f.slot / cols) === r) inRow.push(f);
+            }
+            if (!inRow.length) continue;
+
+            inRow.sort((a, b) => a.slot - b.slot);
+            for (let c = 0; c < inRow.length && c < cols; c++) {
+                const f = inRow[c];
+                f.slot = r * cols + c;
+                next[f.slot] = f;
+            }
+        }
+
+        this.slotUnits[side] = next;
     }
 
     // ------------------------------------------------ 出兵
@@ -559,7 +638,15 @@ export class CampBattle extends Component {
             return;
         }
         const list = this.rows[side] || (this.rows[side] = []);
-        if (list.length >= this.maxAlivePerSide) return; // 场上满了就不再出
+        // unlimited 勾着（或 maxAlivePerSide = 0）就不限制数量，一直出
+        const capped = !this.unlimited && this.maxAlivePerSide > 0;
+        if (capped && list.length >= this.maxAlivePerSide) return;
+        if (list.length === 60) {
+            console.warn(
+                '[CampBattle] 单边已经 60 个兵了，低端机会开始掉帧；' +
+                    '想稳一点就给 maxAlivePerSide 设个 40~60 的软上限。',
+            );
+        }
 
         // 先算落点 → 抢一个最近的空站位 → 才真去取节点，避免取出来又放不下
         const drop = this.resolveDrop(root, side, tap);
@@ -764,7 +851,14 @@ export class CampBattle extends Component {
         if (this.hitEffect) {
             this.fx?.playPrefab(this.hitEffect, at.clone(), 0.6);
         }
-        this.recycleProjectile(fl.proj);
+
+        // 弹体本身带爆炸动画（Spine）就先留在原地播完，再回对象池
+        const boom = fl.proj.playBoom();
+        if (boom > 0) {
+            this.scheduleOnce(() => this.recycleProjectile(fl.proj), boom);
+        } else {
+            this.recycleProjectile(fl.proj);
+        }
     }
 
     private killFighters(dead: Fighter[]) {
@@ -773,7 +867,12 @@ export class CampBattle extends Component {
             if (this.deathEffect) {
                 this.fx?.playPrefab(this.deathEffect, f.unit.node.worldPosition.clone(), 0.8);
             }
-            f.unit.die(() => this.recycle(f.unit));
+            // 站位等到尸体淡出播完再释放，避免后面的兵直接踩到还在倒的尸身上
+            f.unit.die(() => {
+                this.freeSlot(f);
+                this.compactSide(f.side);
+                this.recycle(f.unit);
+            });
         }
     }
 
@@ -783,7 +882,6 @@ export class CampBattle extends Component {
             const i = list.indexOf(f);
             if (i >= 0) {
                 list.splice(i, 1);
-                this.freeSlot(f);
                 this.hpDirty = true;
                 return true;
             }
@@ -815,9 +913,18 @@ export class CampBattle extends Component {
         if (!force && !this.hpDirty) return;
         this.hpDirty = false;
         for (const side of [-1, 1]) {
+            const list = this.rows[side];
             let sum = 0;
-            for (const f of this.rows[side]) sum += Math.max(0, f.hp);
-            const full = this.maxAlivePerSide * this.soldierMaxHp;
+            for (const f of list) sum += Math.max(0, f.hp);
+
+            // 有限模式按上限算满血；无限模式按「初始格子数」和「当前人数」取大值，
+            // 这样人越多血条越长，不会因为 maxAlivePerSide = 0 而恒为 0
+            const capped = !this.unlimited && this.maxAlivePerSide > 0;
+            const fullCount = capped
+                ? this.maxAlivePerSide
+                : Math.max(this.slotCount(), list.length);
+
+            const full = fullCount * this.soldierMaxHp;
             const label = side > 0 ? this.hpLabelR : this.hpLabelL;
             const bar = side > 0 ? this.hpBarR : this.hpBarL;
             if (label) label.string = String(sum);
@@ -849,6 +956,9 @@ export class CampBattle extends Component {
     }
 
     private recycleProjectile(p: SkillProjectile) {
+        // 爆炸动画是延迟回收的，期间场景可能已经切走
+        if (!p || !p.node || !p.node.isValid) return;
+
         p.stop();
         p.node.active = false;
         this.projPool.push(p);
@@ -895,6 +1005,9 @@ export class CampBattle extends Component {
 
         this.slotUnits['-1'] = [];
         this.slotUnits['1'] = [];
+        this.slotCap['-1'] = 0;
+        this.slotCap['1'] = 0;
+        this.rowTopY = null;
         this.slotFullWarned = false;
     }
 }

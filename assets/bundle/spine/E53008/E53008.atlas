@@ -1,0 +1,76 @@
+
+E53008.png
+size: 1809,300
+format: RGBA8888
+filter: Linear,Linear
+repeat: none
+huoqiu_00
+  rotate: false
+  xy: 2, 2
+  size: 376, 147
+  orig: 407, 208
+  offset: 19, 28
+  index: -1
+huoqiu_02
+  rotate: false
+  xy: 1116, 2
+  size: 353, 147
+  orig: 407, 208
+  offset: 42, 28
+  index: -1
+huoqiu_04
+  rotate: false
+  xy: 380, 2
+  size: 375, 147
+  orig: 407, 208
+  offset: 20, 28
+  index: -1
+huoqiu_06
+  rotate: false
+  xy: 2, 151
+  size: 379, 147
+  orig: 407, 208
+  offset: 16, 28
+  index: -1
+huoqiu_08
+  rotate: false
+  xy: 757, 2
+  size: 357, 147
+  orig: 407, 208
+  offset: 38, 28
+  index: -1
+huoqiu_10
+  rotate: false
+  xy: 757, 151
+  size: 366, 147
+  orig: 407, 208
+  offset: 29, 28
+  index: -1
+huoqiu_12
+  rotate: false
+  xy: 1479, 151
+  size: 325, 147
+  orig: 407, 208
+  offset: 70, 28
+  index: -1
+huoqiu_14
+  rotate: false
+  xy: 1125, 151
+  size: 352, 147
+  orig: 407, 208
+  offset: 43, 28
+  index: -1
+huoqiu_16
+  rotate: false
+  xy: 383, 151
+  size: 372, 147
+  orig: 407, 208
+  offset: 23, 28
+  index: -1
+huoqiu_18
+  rotate: false
+  xy: 1471, 2
+  size: 336, 147
+  orig: 407, 208
+  offset: 59, 28
+  index: -1

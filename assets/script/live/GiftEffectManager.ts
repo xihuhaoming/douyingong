@@ -9,9 +9,11 @@ import {
     Tween,
     ParticleSystem2D,
     Animation,
+    sp,
     UITransform,
 } from 'cc';
 import { liveEventBus, LiveGiftEvent } from './LiveEventBus';
+import { spineDefaultAnim } from './SkillProjectile';
 
 const { ccclass, property } = _decorator;
 
@@ -112,14 +114,31 @@ export class GiftEffectManager extends Component {
         }
     }
 
-    /** 真正开始播：粒子 reset / 动画 play / 什么都没有就缩放脉冲兜底 */
+    /** 真正开始播：粒子 reset / 动画 play / Spine 播一遍 / 什么都没有就缩放脉冲兜底 */
     private fire(node: Node, duration: number) {
         node.active = true;
+
         const ps = node.getComponentInChildren(ParticleSystem2D);
         if (ps) ps.resetSystem();
+
         const anim = node.getComponentInChildren(Animation);
         if (anim && anim.defaultClip) anim.play();
-        if (!ps && !anim) {
+
+        // Spine 特效：播 prefab 上 Spine 组件配的默认动画（只播一遍，不循环）
+        // Spine 模块被功能裁剪掉时 cc.sp 是 undefined，这里不能直接取
+        const SkeletonComp = (sp as unknown as typeof sp | undefined)?.Skeleton;
+        const sk = SkeletonComp ? node.getComponentInChildren(SkeletonComp) : null;
+        if (sk) {
+            const name = spineDefaultAnim(sk);
+            if (name) {
+                sk.setToSetupPose();
+                sk.setAnimation(0, name, false);
+            } else {
+                console.warn('[GiftEffect] Spine 特效没配默认动画：' + node.name);
+            }
+        }
+
+        if (!ps && !anim && !sk) {
             tween(node)
                 .to(0.1, { scale: new Vec3(1.18, 1.18, 1) })
                 .to(0.1, { scale: new Vec3(1, 1, 1) })
