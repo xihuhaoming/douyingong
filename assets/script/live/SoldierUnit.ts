@@ -21,7 +21,7 @@ export interface SoldierRunOptions {
  *
  * 位移有两段：
  *   1. run()     从落点上方掉到落点（tween，落地期间不前进）
- *   2. walkToWorldX()  落地后由 CampBattle 每帧驱动，一直朝中线走到空气墙前停住
+ *   2. walkToWorldPos()  落地后由 CampBattle 每帧驱动，走到自己在阵型里的那个站位
  */
 @ccclass('SoldierUnit')
 export class SoldierUnit extends Component {
@@ -35,9 +35,12 @@ export class SoldierUnit extends Component {
 
     /** 落地 tween 进行中：这期间不接受前进指令，否则两套逻辑会抢 position */
     private landing = false;
-    /** 正在朝中线走 */
+    /** 正在朝自己的阵型站位走 */
     private moving = false;
+    /** 已经站定（站位没变就不再重设，避免每帧打断小跳） */
+    private atTarget = false;
     private moveTargetWorldX = 0;
+    private moveTargetWorldY = 0;
     private moveSpeed = 100;
 
     /** 站立时的小跳（用正弦算，不再用 tween，避免和前进抢 position） */
@@ -57,6 +60,7 @@ export class SoldierUnit extends Component {
         this.dying = false;
         this.landing = true;
         this.moving = false;
+        this.atTarget = false;
         this.bobOn = false;
         this.bobPhase = 0;
         this.baseY = o.to.y;
@@ -79,14 +83,23 @@ export class SoldierUnit extends Component {
     }
 
     /**
-     * 朝某个世界 x 坐标走（CampBattle 每帧调，目标会随空气墙变化）。
-     * 传的是世界坐标，内部按父节点的世界缩放换算成局部位移。
+     * 朝某个世界坐标走（CampBattle 每帧调，目标就是阵型里的站位）。
+     * 传世界坐标，内部按父节点的世界缩放换算成局部位移。
+     * 目标没变就直接返回，否则到位后的小跳会被每帧重置、看起来像站桩。
      */
-    walkToWorldX(targetWorldX: number, speed: number) {
+    walkToWorldPos(targetWorldX: number, targetWorldY: number, speed: number) {
         if (this.dying) return;
+
+        const same =
+            Math.abs(this.moveTargetWorldX - targetWorldX) < 0.01 &&
+            Math.abs(this.moveTargetWorldY - targetWorldY) < 0.01;
+        if (same && (this.moving || this.atTarget)) return;
+
         this.moveTargetWorldX = targetWorldX;
+        this.moveTargetWorldY = targetWorldY;
         this.moveSpeed = Math.max(1, speed);
         this.moving = true;
+        this.atTarget = false;
         this.bobOn = false;
     }
 
@@ -94,6 +107,7 @@ export class SoldierUnit extends Component {
     sleep() {
         Tween.stopAllByTarget(this.node);
         this.moving = false;
+        this.atTarget = false;
         this.landing = false;
         this.bobOn = false;
         this.dying = false;
@@ -169,31 +183,36 @@ export class SoldierUnit extends Component {
         }
     }
 
-    /** 朝目标世界 x 走一步；到位就停下并开始小跳 */
+    /** 朝目标世界坐标走一步；到位就停下并开始小跳 */
     private stepMove(dt: number) {
-        const worldX = this.node.worldPosition.x;
-        const dx = this.moveTargetWorldX - worldX;
+        const wp = this.node.worldPosition;
+        const dx = this.moveTargetWorldX - wp.x;
+        const dy = this.moveTargetWorldY - wp.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
         const step = this.moveSpeed * dt;
 
-        if (Math.abs(dx) <= step) {
-            this.moveLocalX(dx);
+        if (dist <= step) {
+            this.moveLocal(dx, dy);
             this.moving = false;
+            this.atTarget = true;
             this.bobOn = true;
             this.bobPhase = 0;
-            const p = this.node.position;
-            this.node.setPosition(p.x, this.baseY, p.z);
+            // 到位后以小跳的平衡位置为准，避免残留一点纵向偏移
+            this.baseY = this.node.position.y;
             return;
         }
 
-        this.moveLocalX(dx > 0 ? step : -step);
+        const k = step / Math.max(dist, 0.0001);
+        this.moveLocal(dx * k, dy * k);
     }
 
     /** 世界位移 → 局部位移（父节点有缩放时换算一下） */
-    private moveLocalX(dxWorld: number) {
+    private moveLocal(dxWorld: number, dyWorld: number) {
         const parent = this.node.parent;
         const sx = parent ? parent.worldScale.x || 1 : 1;
+        const sy = parent ? parent.worldScale.y || 1 : 1;
         const p = this.node.position;
-        this.node.setPosition(p.x + dxWorld / sx, p.y, p.z);
+        this.node.setPosition(p.x + dxWorld / sx, p.y + dyWorld / sy, p.z);
     }
 
     /** 复用前把外观恢复原样 */

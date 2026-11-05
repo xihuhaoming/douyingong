@@ -32,6 +32,8 @@ interface Fighter {
     hp: number;
     /** 距离下次攻击的倒计时（秒） */
     nextAttack: number;
+    /** 占用的阵型站位编号（0 = 最前排），死亡后释放 */
+    slot: number;
 }
 
 /** 一颗在飞的弹体 */
@@ -49,10 +51,12 @@ interface Flight {
  *
  * 玩法：
  *   - 观众点屏幕左/右半边 → 该方出一个兵，落在点击位置（或出生区域随机）
- *   - 落地后持续朝中线（空气墙）前进，走到墙前停住；双方允许 wallOverlap 的轻微交叠
+ *   - 落地后走到自己的阵型站位（formationCols x formationRows 的格子阵列，
+ *     最前排贴着空气墙，后面的列依次后撤），不会全挤在中线一条竖线上
+ *   - 同层按世界 y 排渲染顺序，屏幕上越靠下的兵盖住上面的（2.5D 遮挡）
  *   - 每隔几秒朝对面发射一颗【抛物线】弹体，弹体真的飞到敌人身上才扣血
  *   - 命中点周围 skillRadius 内的所有敌人都吃伤害，边缘按 damageFalloff 衰减
- *   - 血量归零 → 变灰淡出消失（播死亡特效）
+ *   - 血量归零 → 变灰淡出消失（播死亡特效），站位释放给后面的兵
  */
 @ccclass('CampBattle')
 export class CampBattle extends Component {
@@ -77,6 +81,12 @@ export class CampBattle extends Component {
     @property({ type: Node, tooltip: '弹体挂载层（空 = 挂在战斗层下）' })
     skillLayer: Node | null = null;
 
+    @property({
+        type: Node,
+        tooltip: '小兵统一挂载层（只用来做 2.5D 遮挡排序；空 = 直接挂在战斗层下）',
+    })
+    soldierRoot: Node | null = null;
+
     @property({ type: Prefab, tooltip: '技能弹体 prefab（空 = 代码生成占位圆球）' })
     projectilePrefab: Prefab | null = null;
 
@@ -94,8 +104,25 @@ export class CampBattle extends Component {
     @property({ tooltip: '双方允许交叠的宽度（px），20 = 两边各允许压过中线 10' })
     wallOverlap = 20;
 
-    @property({ tooltip: '小兵碰撞半径（px），同时决定在空气墙前停在哪' })
+    @property({ tooltip: '小兵碰撞半径（px），同时决定最前排离空气墙多远' })
     unitRadius = 90;
+
+    // ------------------------------------------------ 阵型站位
+
+    @property({ tooltip: '阵型列数（从空气墙往后排，1 = 只站一排）' })
+    formationCols = 3;
+
+    @property({ tooltip: '每列纵向站几个' })
+    formationRows = 5;
+
+    @property({ tooltip: '列间距（px，往自己后方退）' })
+    colSpacing = 80;
+
+    @property({ tooltip: '行间距（px，纵向）。比兵矮就会前后错开，2.5D 要的就是这个错位' })
+    rowSpacing = 90;
+
+    @property({ tooltip: '阵型纵向中心（相对战斗层 y）' })
+    formationCenterY = -120;
 
     // ------------------------------------------------ 战斗数值
 
@@ -220,6 +247,13 @@ export class CampBattle extends Component {
     /** 出生区域只在第一次算到时打一条日志，避免刷屏 */
     private areaLogged = false;
 
+    /** 每一侧的站位占用表：下标 = 站位编号，值 = 站在这里的兵 */
+    private slotUnits: { [side: number]: (Fighter | null)[] } = { '-1': [], '1': [] };
+    /** 站位满了只警告一次 */
+    private slotFullWarned = false;
+    /** 复用同一个 Vec3 算站位，避免每帧 new */
+    private tmpPos = new Vec3();
+
     /** 在飞的弹体 */
     private flights: Flight[] = [];
     /** 弹体对象池 */
@@ -234,6 +268,14 @@ export class CampBattle extends Component {
     }
 
     start() {
+        const cap = this.slotCount();
+        if (cap < this.maxAlivePerSide) {
+            console.warn(
+                `[CampBattle] 阵型只有 ${cap} 个站位（${this.formationCols}列 x ${this.formationRows}行），` +
+                    `但 maxAlivePerSide = ${this.maxAlivePerSide}，多出来的兵出不来。` +
+                    `要么加列/行数，要么把 maxAlivePerSide 调到 ${cap}。`,
+            );
+        }
         const n = Math.floor(this.initialSoldiersPerSide);
         for (let i = 0; i < n; i++) {
             this.spawnSoldier(-1);
@@ -323,6 +365,24 @@ export class CampBattle extends Component {
         return new Vec3((world.x - wp.x) / sx, (world.y - wp.y) / sy, 0);
     }
 
+    /** 某个节点的局部坐标 → 世界坐标 */
+    private toWorldOf(from: Node, v: Vec3): Vec3 {
+        const ut = from.getComponent(UITransform);
+        if (ut) return ut.convertToWorldSpaceAR(v, new Vec3());
+        return new Vec3(from.worldPosition.x + v.x, from.worldPosition.y + v.y, v.z);
+    }
+
+    /** 出生点局部坐标 → 小兵挂载层的局部坐标（两者父级/位移可能不同） */
+    private toLocalOf(parent: Node, from: Node, v: Vec3): Vec3 {
+        if (parent === from) return v.clone();
+
+        const world = this.toWorldOf(from, v);
+        const utParent = parent.getComponent(UITransform);
+        if (utParent) return utParent.convertToNodeSpaceAR(world, new Vec3());
+
+        return new Vec3(world.x - parent.worldPosition.x, world.y - parent.worldPosition.y, v.z);
+    }
+
     /**
      * 出生区域 = 出生点节点自己 UITransform 的宽高。
      * 返回的是「相对该节点的局部坐标」范围，原点就是节点 position。
@@ -361,6 +421,67 @@ export class CampBattle extends Component {
         return { from, to, seconds: Math.max(0.15, this.dropSeconds) };
     }
 
+    // ------------------------------------------------ 阵型站位
+
+    /** 一侧的站位总数 */
+    private slotCount(): number {
+        return Math.max(1, Math.floor(this.formationCols)) * Math.max(1, Math.floor(this.formationRows));
+    }
+
+    /**
+     * 第 index 个站位的世界坐标。
+     * 编号规则：先按列（离空气墙由近到远），每列 formationRows 个纵向排开。
+     * 所以 index 0 ~ rows-1 就是最前排，后面的列依次往自己后方退。
+     *
+     * 返回的是复用的临时 Vec3，拿到后请立刻取值，别存着跨帧用。
+     */
+    private slotPos(side: number, index: number): Vec3 {
+        const cols = Math.max(1, Math.floor(this.formationCols));
+        const rows = Math.max(1, Math.floor(this.formationRows));
+        const i = clamp(index, 0, cols * rows - 1);
+        const col = Math.floor(i / rows);
+        const row = i % rows;
+
+        const wallX = this.wallWorldX();
+        const r = Math.max(1, this.unitRadius);
+        const halfOverlap = Math.max(0, this.wallOverlap) / 2;
+        // 最前排离中线「小兵半径 - 交叠量/2」，后面的列再往自己后方退
+        const frontX = wallX + side * (r - halfOverlap);
+        const x = frontX + side * col * Math.max(1, this.colSpacing);
+
+        const centerY = this.node.worldPosition.y + this.formationCenterY;
+        const y = centerY + (row - (rows - 1) / 2) * Math.max(1, this.rowSpacing);
+        return this.tmpPos.set(x, y, 0);
+    }
+
+    /** 找一个离落点最近的空站位；满了返回 -1 */
+    private allocSlot(side: number, at: Vec3): number {
+        const arr = this.slotUnits[side] || (this.slotUnits[side] = []);
+        const cap = this.slotCount();
+        while (arr.length < cap) arr.push(null);
+
+        let best = -1;
+        let bestDist = Infinity;
+        for (let i = 0; i < cap; i++) {
+            if (arr[i]) continue;
+            const p = this.slotPos(side, i);
+            const dx = p.x - at.x;
+            const dy = p.y - at.y;
+            const d = dx * dx + dy * dy;
+            if (d < bestDist) {
+                bestDist = d;
+                best = i;
+            }
+        }
+        return best;
+    }
+
+    /** 兵死了 / 被回收，把站位让出来 */
+    private freeSlot(f: Fighter) {
+        const arr = this.slotUnits[f.side];
+        if (arr && arr[f.slot] === f) arr[f.slot] = null;
+    }
+
     // ------------------------------------------------ 出兵
 
     /** 这一方用哪个小兵 prefab：优先各自配置，其次兜底，再没有就出不了兵 */
@@ -378,7 +499,7 @@ export class CampBattle extends Component {
      *   2. 没配区域 → 按屏幕半屏限制，纵向用 dropY（或跟随点击）
      *   3. 连点击位置都没有 → 出生点附近随机落一个
      *
-     * 注意：落点之后还会继续朝中线走，这里只决定「出生在哪」。
+     * 注意：落点之后还会走到自己的阵型站位，这里只决定「出生在哪」。
      */
     private resolveDrop(root: Node, side: number, tap?: { x: number; y: number }) {
         const area = this.spawnRect(root);
@@ -440,23 +561,43 @@ export class CampBattle extends Component {
         const list = this.rows[side] || (this.rows[side] = []);
         if (list.length >= this.maxAlivePerSide) return; // 场上满了就不再出
 
+        // 先算落点 → 抢一个最近的空站位 → 才真去取节点，避免取出来又放不下
+        const drop = this.resolveDrop(root, side, tap);
+        const slot = this.allocSlot(side, this.toWorldOf(root, drop.to));
+        if (slot < 0) {
+            if (!this.slotFullWarned) {
+                this.slotFullWarned = true;
+                console.warn(
+                    `[CampBattle] ${side < 0 ? '左' : '右'}方阵型站满了（${this.slotCount()} 个站位），` +
+                        '这一波兵没出。调大 formationCols / formationRows 就行。',
+                );
+            }
+            return;
+        }
+
         const unit = this.take(pf);
-        unit.node.setParent(root, false);
+        // 统一挂到同一个父节点（SoldierRoot），否则左右两拨兵分属不同父节点，
+        // 没法按 y 交叉排序；坐标从出生点换算过去，落点逻辑完全不用改
+        const parent = this.soldierRoot || this.node;
+        unit.node.setParent(parent, false);
         unit.side = side;
-        list.push({
+
+        const fighter: Fighter = {
             unit,
             side,
             hp: this.soldierMaxHp,
             nextAttack: rand(this.attackIntervalMin, this.attackIntervalMax),
-        });
+            slot,
+        };
+        list.push(fighter);
+        this.slotUnits[side][slot] = fighter;
 
-        const drop = this.resolveDrop(root, side, tap);
         // 左方要朝右（面向敌方），右方要朝左；两张图原图朝向可以不一样
         const artFaceRight = side < 0 ? this.artFaceRight : this.rightArtFaceRight;
         const faceRight = side < 0 ? artFaceRight : !artFaceRight;
         unit.run({
-            from: drop.from,
-            to: drop.to,
+            from: this.toLocalOf(parent, root, drop.from),
+            to: this.toLocalOf(parent, root, drop.to),
             faceRight,
             walkSeconds: drop.seconds,
         });
@@ -469,8 +610,36 @@ export class CampBattle extends Component {
         this.march();
         this.tickAttack(dt);
         this.tickFlights();
+        this.depthSort();
 
         if (this.hpDirty) this.refreshHpUi();
+    }
+
+    /**
+     * 2.5D 前后遮挡：同一层里，屏幕上越靠下（世界 y 越小）的小兵越晚画，盖住上面的那个。
+     * 只调整 siblingIndex，不改坐标；y 相同也不会有抖动（排序稳定，索引只在变化时才设）。
+     */
+    private depthSort() {
+        const parent = this.soldierRoot || this.node;
+        const list: { node: Node; y: number }[] = [];
+
+        for (const side of [-1, 1]) {
+            for (const f of this.rows[side]) {
+                const node = f.unit.node;
+                if (node.parent === parent) list.push({ node, y: node.worldPosition.y });
+            }
+        }
+        if (list.length < 2) return;
+
+        list.sort((a, b) => b.y - a.y);
+
+        // 取这批小兵当前占用的 siblingIndex 槽位（升序），再按 y 顺序重新分配，
+        // 这样父节点里别的子节点（弹体层等）的相对位置不会被挤乱
+        const slots = list.map((it) => it.node.getSiblingIndex()).sort((a, b) => a - b);
+        for (let i = 0; i < list.length; i++) {
+            const node = list[i].node;
+            if (node.getSiblingIndex() !== slots[i]) node.setSiblingIndex(slots[i]);
+        }
     }
 
     /** 空气墙世界 x */
@@ -479,18 +648,17 @@ export class CampBattle extends Component {
     }
 
     /**
-     * 双方持续朝中线前进。
-     * 停步位置 = 离中线「小兵半径 - 交叠量/2」，两边各让一半，所以视觉上交叠 wallOverlap。
+     * 每个兵朝自己的阵型站位走。
+     * 站位是固定格子：最前排由空气墙 + unitRadius 决定，后面的列依次往自己后方退，
+     * 所以不会像以前那样全挤在中线一条竖线上。
      */
     private march() {
-        const wallX = this.wallWorldX();
-        const halfOverlap = Math.max(0, this.wallOverlap) / 2;
-        const r = Math.max(1, this.unitRadius);
-        const leftStop = wallX - r + halfOverlap;
-        const rightStop = wallX + r - halfOverlap;
-
-        for (const f of this.rows[-1]) f.unit.walkToWorldX(leftStop, this.moveSpeed);
-        for (const f of this.rows[1]) f.unit.walkToWorldX(rightStop, this.moveSpeed);
+        for (const side of [-1, 1]) {
+            for (const f of this.rows[side]) {
+                const p = this.slotPos(side, f.slot);
+                f.unit.walkToWorldPos(p.x, p.y, this.moveSpeed);
+            }
+        }
     }
 
     /** 攻击计时：到点就朝对面发射一颗抛物线弹体 */
@@ -615,6 +783,7 @@ export class CampBattle extends Component {
             const i = list.indexOf(f);
             if (i >= 0) {
                 list.splice(i, 1);
+                this.freeSlot(f);
                 this.hpDirty = true;
                 return true;
             }
@@ -723,5 +892,9 @@ export class CampBattle extends Component {
         for (const p of this.projPool) p.node.destroy();
         this.projPool.length = 0;
         this.flights.length = 0;
+
+        this.slotUnits['-1'] = [];
+        this.slotUnits['1'] = [];
+        this.slotFullWarned = false;
     }
 }
