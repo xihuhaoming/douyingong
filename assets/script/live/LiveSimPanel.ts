@@ -1,4 +1,4 @@
-import { _decorator, Component, Button, Prefab, input, Input, EventKeyboard, KeyCode } from 'cc';
+import { _decorator, CCString, Component, Button, Prefab, input, Input, EventKeyboard, KeyCode } from 'cc';
 import { liveEventBus } from './LiveEventBus';
 import { GiftEffectManager } from './GiftEffectManager';
 
@@ -23,7 +23,7 @@ export class LiveSimPanel extends Component {
     @property({ type: [Button], tooltip: '礼物按钮，顺序和 giftIds 一一对应' })
     giftButtons: Button[] = [];
 
-    @property({ type: [String], tooltip: '礼物 id 列表，和 giftButtons 顺序对应' })
+    @property({ type: [CCString], tooltip: '礼物 id 列表，和 giftButtons 顺序对应' })
     giftIds: string[] = [];
 
     @property({ type: GiftEffectManager, tooltip: '点击爆点特效走这里播（可空）' })
@@ -73,10 +73,10 @@ export class LiveSimPanel extends Component {
             case KeyCode.KEY_N:
                 this.boost(1);
                 break;
-            case KeyCode.KEY_1:
-            case KeyCode.KEY_2:
-            case KeyCode.KEY_3: {
-                const i = e.keyCode - KeyCode.KEY_1;
+            case KeyCode.DIGIT_1:
+            case KeyCode.DIGIT_2:
+            case KeyCode.DIGIT_3: {
+                const i = e.keyCode - KeyCode.DIGIT_1;
                 if (i < this.giftButtons.length) this.gift(i);
                 break;
             }

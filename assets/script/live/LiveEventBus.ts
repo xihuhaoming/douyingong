@@ -15,6 +15,12 @@ export interface LiveUserEvent {
     nickname?: string;
     /** 站哪边：-1 = 左方、+1 = 右方。不填由下游随机 */
     side?: number;
+    /**
+     * 点击位置（UI 坐标，来自 EventTouch.getUILocation()）。
+     * 有值时小兵会落在「这一侧的这个点」，没有就回退到固定出生点。
+     * 接真实弹幕时没有点击点，留空即可。
+     */
+    tap?: { x: number; y: number };
 }
 
 /** 刷礼物 */
