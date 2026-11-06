@@ -67,8 +67,22 @@ export class SoldierUnit extends Component {
     @property({ tooltip: '攻击动画是否循环' })
     attackLoop = true;
 
+    @property({
+        tooltip:
+            '攻击动画整体缩放倍率（走路角色高 200px、攻击角色只有 160px 就填 1.25）。' +
+            '只影响交战时，脱离后自动还原',
+    })
+    attackScale = 1;
+
     private baseScaleX = 1;
     private baseScaleY = 1;
+    /** 当前动作倍率（1 = 走路，attackScale = 交战） */
+    private scaleMul = 1;
+    /** 攻击前顶的脉冲强度（1 → 0 衰减），和 scaleMul 乘在一起算最终缩放 */
+    private pulse = 0;
+    private pulseTime = 0;
+    /** 当前朝向（用于重算缩放时保留镜像） */
+    private facingRight = true;
     private sprite: Sprite | null = null;
     private opacity: UIOpacity | null = null;
 
@@ -116,6 +130,8 @@ export class SoldierUnit extends Component {
         this.bobPhase = 0;
         this.recoilX = 0;
         this.recoilApplied = 0;
+        this.pulse = 0;
+        this.pulseTime = 0;
         this.restoreCombat();
         this.baseY = o.to.y;
 
@@ -124,8 +140,9 @@ export class SoldierUnit extends Component {
 
         this.baseScaleX = Math.abs(n.scale.x) || 1;
         this.baseScaleY = Math.abs(n.scale.y) || 1;
-        const sx = o.faceRight ? this.baseScaleX : -this.baseScaleX;
-        n.setScale(sx, this.baseScaleY, n.scale.z);
+        this.facingRight = o.faceRight;
+        this.scaleMul = 1;
+        this.applyScale();
 
         tween(n)
             .to(Math.max(0.12, o.walkSeconds), { position: o.to.clone() }, { easing: 'sineInOut' })
@@ -168,6 +185,8 @@ export class SoldierUnit extends Component {
         this.bobPhase = 0;
         this.recoilX = 0;
         this.recoilApplied = 0;
+        this.pulse = 0;
+        this.pulseTime = 0;
         this.restoreCombat();
         this.restoreTint();
         this.resetVisual();
@@ -183,21 +202,25 @@ export class SoldierUnit extends Component {
         this.recoilX = clamp(this.recoilX + this.side * 14, -30, 30);
     }
 
-    /**
-     * 交战状态切换：有敌人靠近就播攻击动画，脱离就还原行走动画。
-     * 由 CampBattle 每帧按双方距离驱动，这里只负责换图。
-     */
     /** 当前是否在交战（只读，给外部做调试/统计用） */
     get combat(): boolean {
         return this.inCombat;
     }
 
+    /**
+     * 交战状态切换：有敌人靠近就播攻击动画 + 套用 attackScale，脱离就还原。
+     * 由 CampBattle 每帧按双方距离驱动，这里只负责换图和缩放。
+     */
     setCombat(on: boolean) {
         if (this.inCombat === on) return;
         if (this.dying || this.landing) return;
         if (on && !this.attackSheet) return;
 
         this.inCombat = on;
+
+        // 缩放和动画分开：图没配进来时，倍率照样生效
+        this.scaleMul = on ? Math.max(0.05, this.attackScale) : 1;
+        this.applyScale();
 
         if (!this.anim) this.anim = this.getComponent(SpriteSheetAnimation);
         if (!this.anim) return;
@@ -217,9 +240,12 @@ export class SoldierUnit extends Component {
         }
     }
 
-    /** 回到非交战状态（出场 / 回收时调） */
+    /** 回到非交战状态（出场 / 回收时调）：动画和缩放都还原 */
     private restoreCombat() {
         this.inCombat = false;
+        this.scaleMul = 1;
+        this.applyScale();
+
         if (!this.anim) this.anim = this.getComponent(SpriteSheetAnimation);
         this.anim?.playOriginal();
     }
@@ -254,15 +280,41 @@ export class SoldierUnit extends Component {
         this.recoilApplied = this.recoilX;
     }
 
-    /** 攻击反馈：往敌方方向顶一下 */
+    /**
+     * 攻击反馈：往敌方方向顶一下。
+     * 不再用 tween 写 scale —— 那会和 setCombat 里的 applyScale 抢，
+     * 一旦被打断就永远停在攻击尺寸（表现就是"有的兵忽大忽小"）。
+     * 现在只置一个脉冲系数，由 update 每帧衰减并统一走 applyScale。
+     */
     attackPulse() {
-        if (this.dying) return;
+        if (this.dying || this.landing) return;
+
+        this.pulse = 1;
+        this.pulseTime = 0;
+        this.applyScale();
+    }
+
+    /** 推进攻击脉冲（0.2 秒线性衰减到 0） */
+    private tickPulse(dt: number) {
+        if (this.pulse <= 0) return;
+
+        this.pulseTime += dt;
+        const left = 1 - this.pulseTime / 0.2;
+        this.pulse = left > 0 ? left : 0;
+        this.applyScale();
+    }
+
+    /** 按「基础缩放 × 动作倍率 × 攻击脉冲 × 朝向」重设节点缩放（朝向用符号，别覆盖掉） */
+    private applyScale() {
         const n = this.node;
-        const sx = Math.abs(n.scale.x) * (n.scale.x < 0 ? -1 : 1);
-        tween(n)
-            .to(0.08, { scale: new Vec3(sx * 1.15, this.baseScaleY * 1.1, 1) })
-            .to(0.12, { scale: new Vec3(sx, this.baseScaleY, 1) })
-            .start();
+        const dir = this.facingRight ? 1 : -1;
+        const k = this.pulse > 0 ? this.pulse : 0;
+
+        n.setScale(
+            this.baseScaleX * this.scaleMul * (1 + 0.15 * k) * dir,
+            this.baseScaleY * this.scaleMul * (1 + 0.1 * k),
+            n.scale.z,
+        );
     }
 
     /** 死亡：变灰下坠淡出，动画完回调（CampBattle 负责回收节点） */
@@ -300,6 +352,8 @@ export class SoldierUnit extends Component {
 
     update(dt: number) {
         if (this.dying || this.landing) return;
+
+        this.tickPulse(dt);
 
         if (this.moving) {
             this.stepMove(dt);

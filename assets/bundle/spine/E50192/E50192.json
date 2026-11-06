@@ -1,0 +1,83 @@
+{
+"skeleton": {
+	"hash": "GXiJiOhvuC4e7ufBXXDdfNEpUvc",
+	"spine": "3.8.75",
+	"x": -405,
+	"y": -206.33,
+	"width": 810,
+	"height": 624,
+	"images": "./images/",
+	"audio": "C:/Users/Administrator/Desktop/E51189"
+},
+"bones": [
+	{ "name": "root" },
+	{ "name": "shilao_00", "parent": "root" }
+],
+"slots": [
+	{ "name": "shilao_00", "bone": "shilao_00", "attachment": "shilao_20" }
+],
+"skins": [
+	{
+		"name": "default",
+		"attachments": {
+			"shilao_00": {
+				"shilao_00": { "y": 105.67, "width": 567, "height": 437 },
+				"shilao_02": { "y": 105.67, "width": 567, "height": 437 },
+				"shilao_04": { "y": 105.67, "width": 567, "height": 437 },
+				"shilao_06": { "y": 105.67, "width": 567, "height": 437 },
+				"shilao_08": { "y": 105.67, "width": 567, "height": 437 },
+				"shilao_10": { "y": 105.67, "width": 567, "height": 437 },
+				"shilao_12": { "y": 105.67, "width": 567, "height": 437 },
+				"shilao_14": { "y": 105.67, "width": 567, "height": 437 },
+				"shilao_16": { "y": 105.67, "width": 567, "height": 437 },
+				"shilao_18": { "y": 105.67, "width": 567, "height": 437 },
+				"shilao_20": { "y": 105.67, "width": 567, "height": 437 },
+				"shilao_22": { "y": 105.67, "width": 567, "height": 437 },
+				"shilao_24": { "y": 105.67, "width": 567, "height": 437 },
+				"shilao_26": { "y": 105.67, "width": 567, "height": 437 },
+				"shilao_28": { "y": 105.67, "width": 567, "height": 437 },
+				"shilao_30": { "y": 105.67, "width": 567, "height": 437 },
+				"shilao_32": { "y": 105.67, "width": 567, "height": 437 },
+				"shilao_34": { "y": 105.67, "width": 567, "height": 437 },
+				"shilao_36": { "y": 105.67, "width": 567, "height": 437 }
+			}
+		}
+	}
+],
+"events": {
+	"hit": {}
+},
+"animations": {
+	"action": {
+		"slots": {
+			"shilao_00": {
+				"attachment": [
+					{ "name": "shilao_00" },
+					{ "time": 0.0667, "name": "shilao_02" },
+					{ "time": 0.1333, "name": "shilao_04" },
+					{ "time": 0.2, "name": "shilao_06" },
+					{ "time": 0.2667, "name": "shilao_08" },
+					{ "time": 0.3333, "name": "shilao_10" },
+					{ "time": 0.4, "name": "shilao_12" },
+					{ "time": 0.4667, "name": "shilao_14" },
+					{ "time": 0.5333, "name": "shilao_16" },
+					{ "time": 0.6, "name": "shilao_18" },
+					{ "time": 0.6667, "name": "shilao_20" },
+					{ "time": 0.7333, "name": "shilao_22" },
+					{ "time": 0.8, "name": "shilao_24" },
+					{ "time": 0.8667, "name": "shilao_26" },
+					{ "time": 0.9333, "name": "shilao_28" },
+					{ "time": 1, "name": "shilao_30" },
+					{ "time": 1.0667, "name": "shilao_32" },
+					{ "time": 1.1333, "name": "shilao_34" },
+					{ "time": 1.2, "name": "shilao_36" },
+					{ "time": 1.2667, "name": null }
+				]
+			}
+		},
+		"events": [
+			{ "time": 0.8667, "name": "hit" }
+		]
+	}
+}
+}

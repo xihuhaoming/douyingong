@@ -6,6 +6,8 @@
     "count": 1,
     "damage": 60,
     "radius": 240,
+    "effect": "prefabs/fx/pf_tool_mojin",
+    "effectSeconds": 1.2,
     "shakeStrength": 14,
     "shakeDuration": 0.32
   },
@@ -16,8 +18,15 @@
     "count": 1,
     "damage": 45,
     "radius": 200,
+    "effect": "prefabs/fx/pf_tu_qiu",
+    "effectSeconds": 1.8,
     "shakeStrength": 10,
-    "shakeDuration": 0.25
+    "shakeDuration": 0.35,
+    "intro": "prefabs/fx/pf_quanpingda",
+    "introWidthRatio": 1,
+    "introHeightRatio": 1,
+    "introSeconds": 9,
+    "introDim": 0.35
   },
   {
     "id": "luoyangchan",
@@ -42,7 +51,12 @@
     "damage": 55,
     "radius": 260,
     "shakeStrength": 12,
-    "shakeDuration": 0.3
+    "shakeDuration": 0.3,
+    "intro": "prefabs/fx/pf_tool_tongling",
+    "introWidthRatio": 1,
+    "introHeightRatio": 1,
+    "introSeconds": 2,
+    "introDim": 0.35
   },
   {
     "id": "jiulong",

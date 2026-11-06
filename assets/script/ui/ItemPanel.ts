@@ -155,6 +155,12 @@ export class ItemPanel extends Component {
     @property({ tooltip: '点击道具后收起抽屉' })
     closeDrawerOnCast = true;
 
+    @property({
+        type: Node,
+        tooltip: '抽屉的「打开」按钮（如「助力道具」）。全屏特效期间隐藏、播完恢复；空 = 用 Drawer 上配的 Open Button',
+    })
+    drawerButton: Node | null = null;
+
     /** 抖音下发的数量：id → count */
     private runtimeCounts = new Map<string, number>();
     /** 加载过的图标，避免反复 load */
@@ -347,16 +353,24 @@ export class ItemPanel extends Component {
     private async castSkill(data: ItemData, viewItem?: ItemView) {
         if (this.casting) return;
 
+        // 不管走不走卡片，先把列表里的“选中放大副本”清掉，
+        // 否则点了道具后格子会一直保持被选中的样子
+        this.itemList?.clearSelection();
+
         const def = findDef(data.id);
 
         // 抽屉立刻收起，别等动效播完
         if (this.closeDrawerOnCast) this.drawer?.hide();
 
-        // 前置动效（序列帧）：播完回调里再继续
+        // 前置动效（序列帧 / spine）：播完回调里再继续
         if (def?.intro && this.introPlayer) {
             const introPrefab = await this.loadPrefab(def.intro);
             if (introPrefab) {
                 this.casting = true;
+
+                // 全屏演出期间连“助力道具”按钮一起藏掉，播完再露出来
+                this.showDrawerButton(false);
+
                 this.introPlayer.play(
                     introPrefab,
                     {
@@ -367,6 +381,7 @@ export class ItemPanel extends Component {
                     },
                     () => {
                         this.casting = false;
+                        this.showDrawerButton(true);
                         void this.doCast(def, viewItem);
                     },
                 );
@@ -377,12 +392,19 @@ export class ItemPanel extends Component {
         void this.doCast(def, viewItem);
     }
 
+    /** 显示/隐藏抽屉的打开按钮（全屏演出期间藏起来，避免盖在特效上） */
+    private showDrawerButton(on: boolean) {
+        const n = this.drawerButton || this.drawer?.openButton?.node || null;
+        if (n && n.isValid) n.active = on;
+    }
+
     /** 真正的施放：卡片飞行 → 震屏 → 敌方阵营随机点放特效并结算 */
     private async doCast(def: ItemDef | null, viewItem?: ItemView) {
-        const hasCard = !!(viewItem && this.castLayer);
+        // 配了全屏前置动效（intro）的技能不再飞卡片：
+        // 两套表演叠在一起会互相抢注意力，全屏演出本身就是最强的点击反馈
+        const hasCard = !def?.intro && !!(viewItem && this.castLayer);
 
         if (hasCard) {
-            this.itemList?.clearSelection();
             this.flyCard(viewItem!);
         }
 

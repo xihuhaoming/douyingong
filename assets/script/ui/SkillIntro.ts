@@ -8,6 +8,7 @@ import {
     instantiate,
     Node,
     Prefab,
+    sp,
     tween,
     Tween,
     UIOpacity,
@@ -17,6 +18,12 @@ import {
 import { SpriteSheetAnimation } from '../SpriteSheetAnimation';
 
 const { ccclass, property } = _decorator;
+
+/**
+ * 项目设置 → 功能裁剪 里没勾 Spine 时，运行时的 cc.sp 是 undefined。
+ * 直接取 sp.Skeleton 会在模块加载阶段就抛错，所以统一兜底。
+ */
+const SP = sp as unknown as typeof sp | undefined;
 
 /** 一次前置动效的参数 */
 export interface SkillIntroOptions {
@@ -74,6 +81,8 @@ export class SkillIntro extends Component {
     private current: Node | null = null;
     private dimNode: Node | null = null;
     private dimOp: UIOpacity | null = null;
+    /** 当前动效里的 Spine（有的话，结束时要停掉轨道） */
+    private skeleton: sp.Skeleton | null = null;
 
     get isPlaying(): boolean {
         return this.playing;
@@ -115,6 +124,7 @@ export class SkillIntro extends Component {
         node.setSiblingIndex(root.children.length - 1);
         this.current = node;
 
+        this.skeleton = null;
         this.fitIntoBox(node, wRatio, hRatio);
         this.playAnimation(node);
 
@@ -136,6 +146,8 @@ export class SkillIntro extends Component {
     /** 立刻停止并清理（切场景 / 被新的动效打断时用） */
     cancel() {
         this.unscheduleAllCallbacks();
+
+        this.stopSkeleton();
 
         const node = this.current;
         if (node && node.isValid) node.destroy();
@@ -182,7 +194,7 @@ export class SkillIntro extends Component {
         }
     }
 
-    /** 播序列帧（优先 SpriteSheetAnimation，其次 Animation） */
+    /** 播动效：优先序列帧 → 其次 Animation → 最后 Spine */
     private playAnimation(node: Node) {
         const sheet = node.getComponentInChildren(SpriteSheetAnimation);
         if (sheet) {
@@ -191,7 +203,40 @@ export class SkillIntro extends Component {
         }
 
         const anim = node.getComponentInChildren(Animation);
-        if (anim && anim.defaultClip) anim.play();
+        if (anim && anim.defaultClip) {
+            anim.play();
+            return;
+        }
+
+        // 全屏大招通常是纯 spine prefab：播它 Inspector 上配的默认动画（只播一次）
+        const SkeletonComp = SP ? SP.Skeleton : null;
+        const sk = SkeletonComp ? node.getComponentInChildren(SkeletonComp) : null;
+        if (!sk) return;
+
+        const anySk = sk as unknown as { defaultAnimation?: string; animation?: string };
+        const name = anySk.defaultAnimation || anySk.animation || '';
+
+        if (!name) {
+            console.warn('[SkillIntro] Spine 动效没配默认动画：' + node.name);
+            this.skeleton = sk;
+            return;
+        }
+
+        sk.setToSetupPose();
+        sk.setAnimation(0, name, false);
+        this.skeleton = sk;
+
+        if (this.debugLog) console.log(`[SkillIntro] Spine 动画：${name}`);
+    }
+
+    /** 停掉当前动效里的 spine 轨道，避免循环停在最后一帧 */
+    private stopSkeleton() {
+        const sk = this.skeleton;
+        this.skeleton = null;
+        if (!sk || !sk.isValid) return;
+
+        sk.setToSetupPose();
+        sk.clearTracks();
     }
 
     private finish(onDone?: () => void) {
@@ -212,6 +257,7 @@ export class SkillIntro extends Component {
         tween(op)
             .to(Math.max(0.05, this.fadeOut), { opacity: 0 })
             .call(() => {
+                this.stopSkeleton();
                 if (node.isValid) node.destroy();
                 if (this.current === node) this.current = null;
                 this.hideDim();

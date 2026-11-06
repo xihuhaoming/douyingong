@@ -1,5 +1,6 @@
 import {
     _decorator,
+    Color,
     Component,
     Graphics,
     Node,
@@ -17,6 +18,7 @@ import {
 } from 'cc';
 import { liveEventBus, LiveUserEvent } from './LiveEventBus';
 import { BattleFormation } from './BattleFormation';
+import { FxLayer } from './FxLayer';
 import { SoldierUnit } from './SoldierUnit';
 import { SkillProjectile } from './SkillProjectile';
 import { GiftEffectManager } from './GiftEffectManager';
@@ -61,254 +63,271 @@ interface Flight {
  */
 @ccclass('CampBattle')
 export class CampBattle extends Component {
-    @property({ type: Prefab, tooltip: '小兵 prefab 兜底（左右没单独配时用这个）' })
+    @property({ group: { name: '资源引用', id: 'res' }, type: Prefab, tooltip: '小兵 prefab 兜底（左右没单独配时用这个）' })
     soldierPrefab: Prefab | null = null;
 
-    @property({ type: Prefab, tooltip: '左方小兵 prefab（空 = 用 soldierPrefab）' })
+    @property({ group: { name: '资源引用', id: 'res' }, type: Prefab, tooltip: '左方小兵 prefab（空 = 用 soldierPrefab）' })
     leftSoldierPrefab: Prefab | null = null;
 
-    @property({ type: Prefab, tooltip: '右方小兵 prefab（空 = 用 soldierPrefab）' })
+    @property({ group: { name: '资源引用', id: 'res' }, type: Prefab, tooltip: '右方小兵 prefab（空 = 用 soldierPrefab）' })
     rightSoldierPrefab: Prefab | null = null;
 
-    // ------------------------------------------------ 对象池
-
-    @property({ tooltip: '每种兵最多缓存多少个（超出直接销毁，防止无限出兵把池子撑爆）' })
-    maxPooledPerPrefab = 40;
-
-    @property({ tooltip: '开局预热多少个兵（每边），减少前几次出兵的卡顿；0 = 不预热' })
-    prewarmPerSide = 6;
-
-    @property({ type: Node, tooltip: '左方出生点 / 出生区域（UITransform 的宽高就是随机范围）' })
+    @property({ group: { name: '资源引用', id: 'res' }, type: Node, tooltip: '左方出生点 / 出生区域（UITransform 的宽高就是随机范围）' })
     leftRoot: Node | null = null;
 
-    @property({ type: Node, tooltip: '右方出生点 / 出生区域' })
+    @property({ group: { name: '资源引用', id: 'res' }, type: Node, tooltip: '右方出生点 / 出生区域' })
     rightRoot: Node | null = null;
 
-    @property({ type: Node, tooltip: '空气墙节点（中线），双方都走不过去；不配 = 用本节点 x' })
+    @property({ group: { name: '资源引用', id: 'res' }, type: Node, tooltip: '空气墙节点（中线），双方都走不过去；不配 = 用本节点 x' })
     centerWall: Node | null = null;
 
-    @property({ type: Node, tooltip: '弹体挂载层（空 = 挂在战斗层下）' })
+    @property({ group: { name: '资源引用', id: 'res' }, type: Node, tooltip: '弹体挂载层（空 = 挂在战斗层下）' })
     skillLayer: Node | null = null;
 
     @property({
+        group: { name: '资源引用', id: 'res' },
         type: Node,
         tooltip: '小兵统一挂载层（只用来做 2.5D 遮挡排序；空 = 直接挂在战斗层下）',
     })
     soldierRoot: Node | null = null;
 
-    @property({ type: Prefab, tooltip: '技能弹体 prefab（兜底；左右没单独配时用它，空 = 代码生成占位圆球）' })
+    @property({ group: { name: '资源引用', id: 'res' }, type: Prefab, tooltip: '技能弹体 prefab（兜底；左右没单独配时用它，空 = 代码生成占位圆球）' })
     projectilePrefab: Prefab | null = null;
 
-    @property({ type: Prefab, tooltip: '左方弹体 prefab（空 = 用上面的兜底）' })
+    @property({ group: { name: '资源引用', id: 'res' }, type: Prefab, tooltip: '左方弹体 prefab（空 = 用上面的兜底）' })
     leftProjectilePrefab: Prefab | null = null;
 
-    @property({ type: Prefab, tooltip: '右方弹体 prefab（空 = 用上面的兜底）' })
+    @property({ group: { name: '资源引用', id: 'res' }, type: Prefab, tooltip: '右方弹体 prefab（空 = 用上面的兜底）' })
     rightProjectilePrefab: Prefab | null = null;
 
     // ------------------------------------------------ 命中爆炸（独立 spine）
 
     @property({
+        group: { name: '命中爆炸', id: 'boom' },
         type: Prefab,
         tooltip: '左方命中爆炸 prefab。配了就用它（独立 spine），不再播弹体自身的 boom',
     })
     leftBoomPrefab: Prefab | null = null;
 
-    @property({ type: Prefab, tooltip: '右方命中爆炸 prefab' })
+    @property({ group: { name: '命中爆炸', id: 'boom' }, type: Prefab, tooltip: '右方命中爆炸 prefab' })
     rightBoomPrefab: Prefab | null = null;
 
-    @property({ tooltip: '左方爆炸 spine 动画名（留空 = 用 prefab 上 Spine 组件的默认动画）' })
+    @property({ group: { name: '命中爆炸', id: 'boom' }, tooltip: '左方爆炸 spine 动画名（留空 = 用 prefab 上 Spine 组件的默认动画）' })
     leftBoomAnim = '';
 
-    @property({ tooltip: '右方爆炸 spine 动画名（留空 = 默认动画）' })
+    @property({ group: { name: '命中爆炸', id: 'boom' }, tooltip: '右方爆炸 spine 动画名（留空 = 默认动画）' })
     rightBoomAnim = '';
 
-    @property({ tooltip: '左方爆炸特效时长（秒，要 ≥ spine 动画实际长度，否则会播一半被回收）' })
+    @property({ group: { name: '命中爆炸', id: 'boom' }, tooltip: '左方爆炸特效时长（秒，要 ≥ spine 动画实际长度，否则会播一半被回收）' })
     leftBoomSeconds = 0.8;
 
-    @property({ tooltip: '右方爆炸特效时长（秒）' })
+    @property({ group: { name: '命中爆炸', id: 'boom' }, tooltip: '右方爆炸特效时长（秒）' })
     rightBoomSeconds = 0.8;
 
-    @property({ tooltip: '小兵贴图默认朝向：画的是朝右就勾上' })
+    // ------------------------------------------------ 对象池
+
+    @property({
+        group: { name: '对象池', id: 'pool' },
+        tooltip: '每种兵最多缓存多少个（超出直接销毁，防止无限出兵把池子撑爆）',
+    })
+    maxPooledPerPrefab = 40;
+
+    @property({ group: { name: '对象池', id: 'pool' }, tooltip: '开局预热多少个兵（每边），减少前几次出兵的卡顿；0 = 不预热' })
+    prewarmPerSide = 6;
+
+    @property({ group: { name: '其他', id: 'misc' }, tooltip: '小兵贴图默认朝向：画的是朝右就勾上' })
     artFaceRight = true;
 
-    @property({ tooltip: '右方小兵贴图是否也朝右（右方图是朝左的话取消勾选）' })
+    @property({ group: { name: '其他', id: 'misc' }, tooltip: '右方小兵贴图是否也朝右（右方图是朝左的话取消勾选）' })
     rightArtFaceRight = true;
 
-    // ------------------------------------------------ 移动 / 空气墙
+    // ------------------------------------------------ 移动 / 交战
 
-    @property({ tooltip: '前进速度（px/秒）' })
+    @property({ group: { name: '移动 / 交战', id: 'move' }, tooltip: '前进速度（px/秒）' })
     moveSpeed = 110;
 
-    @property({ tooltip: '双方允许交叠的宽度（px），20 = 两边各允许压过中线 10' })
+    @property({ group: { name: '移动 / 交战', id: 'move' }, tooltip: '双方允许交叠的宽度（px），20 = 两边各允许压过中线 10' })
     wallOverlap = 20;
 
-    @property({ tooltip: '小兵碰撞半径（px），同时决定最前排离空气墙多远' })
+    @property({ group: { name: '移动 / 交战', id: 'move' }, tooltip: '小兵碰撞半径（px），同时决定最前排离空气墙多远' })
     unitRadius = 90;
 
     @property({
+        group: { name: '移动 / 交战', id: 'move' },
         tooltip: '双方小兵中心距离小于这个值（px）就切攻击动画。最前排贴脸时约 2×(unitRadius-wallOverlap/2)',
     })
     contactRange = 200;
 
-    @property({ tooltip: '打印"小兵进入交战"的日志，调试用' })
+    @property({ group: { name: '移动 / 交战', id: 'move' }, tooltip: '打印"小兵进入交战"的日志，调试用' })
     debugLogContact = false;
 
     // ------------------------------------------------ 矩形活动区域（空气墙）
 
     @property({
+        group: { name: '活动区域', id: 'area' },
         type: Node,
         tooltip: '活动区域：拖一个铺满可视区的空节点（用它的 UITransform 矩形）；空 = 用全屏 + 下面的留白',
     })
     playArea: Node | null = null;
 
-    @property({ tooltip: '左右留白（px），防止贴边被裁' })
+    @property({ group: { name: '活动区域', id: 'area' }, tooltip: '左右留白（px），防止贴边被裁' })
     areaPaddingX = 40;
 
-    @property({ tooltip: '上边留白（px），给顶部血条/头像让位' })
+    @property({ group: { name: '活动区域', id: 'area' }, tooltip: '上边留白（px），给顶部血条/头像让位' })
     areaPaddingTop = 120;
 
-    @property({ tooltip: '下边留白（px），一般是底部按钮/抽屉的高度' })
+    @property({ group: { name: '活动区域', id: 'area' }, tooltip: '下边留白（px），一般是底部按钮/抽屉的高度' })
     areaPaddingBottom = 230;
 
     // ------------------------------------------------ 阵型站位
 
-    @property({ tooltip: '阵型列数（从空气墙往后排，1 = 只站一排）' })
+    @property({ group: { name: '阵型', id: 'formation' }, tooltip: '阵型列数（从空气墙往后排，1 = 只站一排）' })
     formationCols = 3;
 
-    @property({ tooltip: '每列纵向站几个' })
+    @property({ group: { name: '阵型', id: 'formation' }, tooltip: '每列纵向站几个' })
     formationRows = 5;
 
-    @property({ tooltip: '列间距（px，往自己后方退）' })
+    @property({ group: { name: '阵型', id: 'formation' }, tooltip: '列间距（px，往自己后方退）' })
     colSpacing = 80;
 
-    @property({ tooltip: '行间距（px，纵向）。比兵矮就会前后错开，2.5D 要的就是这个错位' })
+    @property({ group: { name: '阵型', id: 'formation' }, tooltip: '行间距（px，纵向）。比兵矮就会前后错开，2.5D 要的就是这个错位' })
     rowSpacing = 90;
 
-    @property({ tooltip: '阵型纵向中心（相对战斗层 y）' })
+    @property({ group: { name: '阵型', id: 'formation' }, tooltip: '阵型纵向中心（相对战斗层 y）' })
     formationCenterY = -120;
 
     // ------------------------------------------------ 战斗数值
 
-    @property({ tooltip: '每个小兵的满血量' })
+    @property({ group: { name: '战斗数值', id: 'combat' }, tooltip: '每个小兵的满血量' })
     soldierMaxHp = 1000;
 
-    @property({ tooltip: '单发技能的基础伤害下限' })
+    @property({ group: { name: '战斗数值', id: 'combat' }, tooltip: '单发技能的基础伤害下限' })
     damageMin = 10;
 
-    @property({ tooltip: '单发技能的基础伤害上限' })
+    @property({ group: { name: '战斗数值', id: 'combat' }, tooltip: '单发技能的基础伤害上限' })
     damageMax = 80;
 
-    @property({ tooltip: '攻击间隔下限（秒）' })
+    @property({ group: { name: '战斗数值', id: 'combat' }, tooltip: '攻击间隔下限（秒）' })
     attackIntervalMin = 2.0;
 
-    @property({ tooltip: '攻击间隔上限（秒）' })
+    @property({ group: { name: '战斗数值', id: 'combat' }, tooltip: '攻击间隔上限（秒）' })
     attackIntervalMax = 4.0;
 
-    @property({ tooltip: '超过这个距离就不出手（px）' })
+    @property({ group: { name: '战斗数值', id: 'combat' }, tooltip: '超过这个距离就不出手（px）' })
     attackRange = 700;
 
     @property({
+        group: { name: '战斗数值', id: 'combat' },
         tooltip: '不限制单边兵力：勾上就忽略 maxAlivePerSide，格子满了自动往后加行，一直出',
     })
     unlimited = true;
 
     @property({
+        group: { name: '战斗数值', id: 'combat' },
         tooltip: '每边场上最多多少个兵（unlimited 勾着时无效）。填 0 也等于不限制',
     })
     maxAlivePerSide = 15;
 
-    @property({ tooltip: '开局每边先出几个兵（演示用，0 = 空场开局）' })
-    initialSoldiersPerSide = 3;
-
-    @property({ tooltip: '进直播间（enter 事件）的出兵概率 0~1' })
-    enterChance = 0.6;
-
     // ------------------------------------------------ 技能弹体
 
-    @property({ tooltip: '弹体飞行速度（px/秒）' })
+    @property({ group: { name: '技能弹体', id: 'proj' }, tooltip: '弹体飞行速度（px/秒）' })
     projectileSpeed = 800;
 
-    @property({ tooltip: '弹体碰撞半径（px）' })
+    @property({ group: { name: '技能弹体', id: 'proj' }, tooltip: '弹体碰撞半径（px）' })
     projectileRadius = 26;
 
-    @property({ tooltip: '抛物线最高点高度（px）' })
+    @property({ group: { name: '技能弹体', id: 'proj' }, tooltip: '抛物线最高点高度（px）' })
     arcHeight = 180;
 
-    @property({ tooltip: '技能范围伤害半径（px）' })
+    @property({ group: { name: '技能弹体', id: 'proj' }, tooltip: '技能范围伤害半径（px）' })
     skillRadius = 120;
 
-    @property({ tooltip: '范围边缘伤害系数（0~1），1 = 不衰减' })
+    @property({ group: { name: '技能弹体', id: 'proj' }, tooltip: '范围边缘伤害系数（0~1），1 = 不衰减' })
     damageFalloff = 0.6;
 
-    // ------------------------------------------------ 道具技能（外部调用）
+    // ------------------------------------------------ 出兵规则
 
-    @property({ tooltip: '本地玩家阵营：-1 左 / +1 右。道具技能会打向对面' })
-    mySide = -1;
+    @property({ group: { name: '出兵规则', id: 'spawn' }, tooltip: '开局每边先出几个兵（演示用，0 = 空场开局）' })
+    initialSoldiersPerSide = 3;
 
-    // ------------------------------------------------ 出兵交互
+    @property({ group: { name: '出兵规则', id: 'spawn' }, tooltip: '进直播间（enter 事件）的出兵概率 0~1' })
+    enterChance = 0.6;
 
-    @property({ tooltip: '点屏幕左/右半边出兵（真实观众交互；预览时可关掉避免和模拟按钮重复）' })
+    @property({ group: { name: '出兵规则', id: 'spawn' }, tooltip: '点屏幕左/右半边出兵（真实观众交互；预览时可关掉避免和模拟按钮重复）' })
     tapToBoost = true;
 
-    @property({ tooltip: '点哪里就在那一侧的哪里落地（关掉 = 固定从左右出生点出）' })
+    @property({ group: { name: '出兵规则', id: 'spawn' }, tooltip: '点哪里就在那一侧的哪里落地（关掉 = 固定从左右出生点出）' })
     dropToTap = true;
 
     @property({
+        group: { name: '出兵规则', id: 'spawn' },
         tooltip: '出生范围用出生点节点自己的 UITransform 宽高（把 LeftSpawn / RightSpawn 拖大即可）',
     })
     useSpawnArea = true;
 
-    @property({ tooltip: '落地基准高度（相对 BattleLayer，负数往下）' })
+    @property({ group: { name: '出兵规则', id: 'spawn' }, tooltip: '落地基准高度（相对 BattleLayer，负数往下）' })
     dropY = -80;
 
-    @property({ tooltip: '纵向是否也跟随点击位置（关掉 = 只用 dropY 当地面）' })
+    @property({ group: { name: '出兵规则', id: 'spawn' }, tooltip: '纵向是否也跟随点击位置（关掉 = 只用 dropY 当地面）' })
     followTapY = false;
 
-    @property({ tooltip: '落点离中线 / 屏幕边缘的留白（px），防止贴边' })
+    @property({ group: { name: '出兵规则', id: 'spawn' }, tooltip: '落点离中线 / 屏幕边缘的留白（px），防止贴边' })
     dropSidePadding = 60;
 
-    @property({ tooltip: '出生区域内部留白（px），区域小的时候要调小，否则全挤在中心' })
+    @property({ group: { name: '出兵规则', id: 'spawn' }, tooltip: '出生区域内部留白（px），区域小的时候要调小，否则全挤在中心' })
     areaPad = 10;
 
-    @property({ tooltip: '落点横向随机偏移（px），同一点连点几个不会完全重叠' })
+    @property({ group: { name: '出兵规则', id: 'spawn' }, tooltip: '落点横向随机偏移（px），同一点连点几个不会完全重叠' })
     dropJitterX = 50;
 
-    @property({ tooltip: '落点纵向随机偏移（px）' })
+    @property({ group: { name: '出兵规则', id: 'spawn' }, tooltip: '落点纵向随机偏移（px）' })
     dropJitterY = 25;
 
-    @property({ tooltip: '从天而降的高度（px），0 = 直接在落点出现' })
+    @property({ group: { name: '出兵规则', id: 'spawn' }, tooltip: '从天而降的高度（px），0 = 直接在落点出现' })
     dropHeight = 120;
 
-    @property({ tooltip: '落下过程耗时（秒）' })
+    @property({ group: { name: '出兵规则', id: 'spawn' }, tooltip: '落下过程耗时（秒）' })
     dropSeconds = 0.35;
+
+    // ------------------------------------------------ 道具技能（外部调用）
+
+    @property({ group: { name: '其他', id: 'misc' }, tooltip: '本地玩家阵营：-1 左 / +1 右。道具技能会打向对面' })
+    mySide = -1;
 
     // ------------------------------------------------ 表现
 
-    @property({ type: GiftEffectManager, tooltip: '技能命中/死亡/点击特效走这里播（可空）' })
+    @property({ group: { name: '表现 / UI', id: 'view' }, type: GiftEffectManager, tooltip: '技能命中/死亡/点击特效走这里播（可空）' })
     fx: GiftEffectManager | null = null;
 
-    @property({ type: DamageTextLayer, tooltip: '伤害飘字层（可空，不配就不飘数字）' })
+    @property({ group: { name: '表现 / UI', id: 'view' }, type: DamageTextLayer, tooltip: '伤害飘字层（可空，不配就不飘数字）' })
     damageText: DamageTextLayer | null = null;
 
-    @property({ type: Prefab, tooltip: '技能命中特效 prefab（可空）' })
+    @property({ group: { name: '表现 / UI', id: 'view' }, type: Prefab, tooltip: '技能命中特效 prefab（可空）' })
     hitEffect: Prefab | null = null;
 
-    @property({ type: Prefab, tooltip: '死亡特效 prefab（可空）' })
+    @property({ group: { name: '表现 / UI', id: 'view' }, type: Prefab, tooltip: '死亡特效 prefab（可空）' })
     deathEffect: Prefab | null = null;
 
-    @property({ type: Prefab, tooltip: '点击助力时指尖爆点特效（可空）' })
+    @property({ group: { name: '表现 / UI', id: 'view' }, type: Prefab, tooltip: '点击助力时指尖爆点特效（可空）' })
     tapBurst: Prefab | null = null;
 
-    @property({ type: Label, tooltip: '左方总血量文字（可空）' })
+    @property({
+        group: { name: '表现 / UI', id: 'view' },
+        type: FxLayer,
+        tooltip: '代码绘制的命中/点击/死亡特效层（空 = 运行时自动创建）。上面三个 prefab 留空时走这里',
+    })
+    fxLayer: FxLayer | null = null;
+
+    @property({ group: { name: '表现 / UI', id: 'view' }, type: Label, tooltip: '左方总血量文字（可空）' })
     hpLabelL: Label | null = null;
 
-    @property({ type: Label, tooltip: '右方总血量文字（可空）' })
+    @property({ group: { name: '表现 / UI', id: 'view' }, type: Label, tooltip: '右方总血量文字（可空）' })
     hpLabelR: Label | null = null;
 
-    @property({ type: ProgressBar, tooltip: '左方血条（可空）' })
+    @property({ group: { name: '表现 / UI', id: 'view' }, type: ProgressBar, tooltip: '左方血条（可空）' })
     hpBarL: ProgressBar | null = null;
 
-    @property({ type: ProgressBar, tooltip: '右方血条（可空）' })
+    @property({ group: { name: '表现 / UI', id: 'view' }, type: ProgressBar, tooltip: '右方血条（可空）' })
     hpBarR: ProgressBar | null = null;
 
     // ------------------------------------------------ 运行时状态
@@ -398,8 +417,13 @@ export class CampBattle extends Component {
         const half = this.viewSize().width / 2;
         const side = loc.x < half ? -1 : 1;
         liveEventBus.emitUser('boost', { side, tap: { x: loc.x, y: loc.y } });
+
+        const at = new Vec3(loc.x, loc.y, 0);
         if (this.tapBurst) {
-            this.fx?.playPrefab(this.tapBurst, new Vec3(loc.x, loc.y, 0), 0.6);
+            this.fx?.playPrefab(this.tapBurst, at, 0.6);
+        } else {
+            // 没配 prefab：用代码画的小波纹 + 光点，比占位圆环干净
+            this.getFxLayer().playTap(at, new Color(255, 226, 160, 255));
         }
     }
 
@@ -989,6 +1013,9 @@ export class CampBattle extends Component {
 
         if (this.hitEffect) {
             this.fx?.playPrefab(this.hitEffect, at.clone(), 0.6);
+        } else {
+            const k = clamp(fl.damage / Math.max(1, this.damageMax), 0, 1);
+            this.getFxLayer().playHit(at.clone(), this.hitColor(k), 0.85 + k * 0.6);
         }
 
         // 弹体本身带爆炸动画（Spine）就先留在原地播完，再回对象池
@@ -1005,6 +1032,8 @@ export class CampBattle extends Component {
             if (!this.removeFighter(f)) continue; // 同一帧被两颗弹重复命中的话只结算一次
             if (this.deathEffect) {
                 this.fx?.playPrefab(this.deathEffect, f.unit.node.worldPosition.clone(), 0.8);
+            } else {
+                this.getFxLayer().playDeath(f.unit.node.worldPosition.clone());
             }
             // 站位等到尸体淡出播完再释放，避免后面的兵直接踩到还在倒的尸身上
             f.unit.die(() => {
@@ -1105,6 +1134,9 @@ export class CampBattle extends Component {
             this.fx?.playPrefab(effect, at.clone(), effectSeconds, 0, effectAnim);
         } else if (this.hitEffect) {
             this.fx?.playPrefab(this.hitEffect, at.clone(), 0.6);
+        } else {
+            const k = clamp(damage / Math.max(1, this.damageMax), 0, 1);
+            this.getFxLayer().playHit(at.clone(), this.hitColor(k), 0.9 + k * 0.6);
         }
 
         if (dead.length) this.killFighters(dead);
@@ -1198,6 +1230,28 @@ export class CampBattle extends Component {
     /** 这一方用哪个爆炸 prefab（没配返回 null → 走弹体自身的 boom 动画 / hitEffect） */
     private boomPrefabFor(side: number): Prefab | null {
         return side > 0 ? this.rightBoomPrefab : this.leftBoomPrefab;
+    }
+
+    /** 代码特效层：没在 Inspector 里挂就在运行时创建一个（挂在弹体层/兵层下面） */
+    private getFxLayer(): FxLayer {
+        if (this.fxLayer && this.fxLayer.isValid) return this.fxLayer;
+
+        const parent = this.skillLayer || this.soldierRoot || this.node;
+        const n = new Node('FxLayer');
+        n.layer = parent.layer;
+        n.setParent(parent, false);
+        n.setPosition(0, 0, 0);
+        n.addComponent(UITransform);
+
+        this.fxLayer = n.addComponent(FxLayer);
+        return this.fxLayer;
+    }
+
+    /** 命中颜色：按伤害占比分档（白 → 金 → 红），和飘字保持同一套色系 */
+    private hitColor(k: number): Color {
+        if (k > 0.85) return new Color(255, 96, 96, 255);
+        if (k > 0.55) return new Color(255, 214, 92, 255);
+        return new Color(255, 245, 220, 255);
     }
 
     private takeProjectile(side: number): SkillProjectile {

@@ -173,13 +173,14 @@
       "__id__": 9
     },
     "attackSheet": {
-      "__uuid__": "eac9b160-524b-410b-8f35-5789401d1324@f9941",
+      "__uuid__": "c62e63b4-f500-4ab8-98c0-15ce50759e7b@f9941",
       "__expectedType__": "cc.SpriteFrame"
     },
-    "attackFrameWidth": 0,
-    "attackFrameHeight": 0,
-    "attackFps": 12,
+    "attackFrameWidth": 600,
+    "attackFrameHeight": 600,
+    "attackFps": 22,
     "attackLoop": true,
+    "attackScale": 1.2,
     "_id": ""
   },
   {
@@ -202,8 +203,8 @@
       "__uuid__": "1ca982c4-913a-456b-9995-7c6912a6a151@f9941",
       "__expectedType__": "cc.SpriteFrame"
     },
-    "frameWidth": 220,
-    "frameHeight": 220,
+    "frameWidth": 192,
+    "frameHeight": 192,
     "fps": 12,
     "direction": 0,
     "loop": true,

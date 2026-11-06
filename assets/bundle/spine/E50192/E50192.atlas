@@ -1,0 +1,139 @@
+
+E50192.png
+size: 2026,1752
+format: RGBA8888
+filter: Linear,Linear
+repeat: none
+shilao_00
+  rotate: false
+  xy: 2, 2
+  size: 263, 81
+  orig: 567, 437
+  offset: 155, 109
+  index: -1
+shilao_02
+  rotate: false
+  xy: 508, 2
+  size: 339, 106
+  orig: 567, 437
+  offset: 117, 98
+  index: -1
+shilao_04
+  rotate: false
+  xy: 1014, 2
+  size: 414, 221
+  orig: 567, 437
+  offset: 79, 86
+  index: -1
+shilao_06
+  rotate: false
+  xy: 1520, 2
+  size: 452, 227
+  orig: 567, 437
+  offset: 61, 80
+  index: -1
+shilao_08
+  rotate: false
+  xy: 2, 352
+  size: 453, 210
+  orig: 567, 437
+  offset: 61, 80
+  index: -1
+shilao_10
+  rotate: false
+  xy: 508, 352
+  size: 452, 215
+  orig: 567, 437
+  offset: 61, 80
+  index: -1
+shilao_12
+  rotate: false
+  xy: 1014, 352
+  size: 452, 204
+  orig: 567, 437
+  offset: 61, 81
+  index: -1
+shilao_14
+  rotate: false
+  xy: 1520, 352
+  size: 458, 274
+  orig: 567, 437
+  offset: 61, 80
+  index: -1
+shilao_16
+  rotate: false
+  xy: 2, 702
+  size: 479, 228
+  orig: 567, 437
+  offset: 56, 80
+  index: -1
+shilao_18
+  rotate: false
+  xy: 508, 702
+  size: 490, 272
+  orig: 567, 437
+  offset: 51, 80
+  index: -1
+shilao_20
+  rotate: false
+  xy: 1014, 702
+  size: 473, 278
+  orig: 567, 437
+  offset: 50, 80
+  index: -1
+shilao_22
+  rotate: false
+  xy: 1520, 702
+  size: 475, 280
+  orig: 567, 437
+  offset: 49, 70
+  index: -1
+shilao_24
+  rotate: false
+  xy: 2, 1052
+  size: 482, 348
+  orig: 567, 437
+  offset: 42, 41
+  index: -1
+shilao_26
+  rotate: false
+  xy: 508, 1052
+  size: 504, 279
+  orig: 567, 437
+  offset: 50, 80
+  index: -1
+shilao_28
+  rotate: false
+  xy: 1014, 1052
+  size: 484, 292
+  orig: 567, 437
+  offset: 59, 81
+  index: -1
+shilao_30
+  rotate: false
+  xy: 1520, 1052
+  size: 471, 291
+  orig: 567, 437
+  offset: 59, 81
+  index: -1
+shilao_32
+  rotate: false
+  xy: 2, 1402
+  size: 475, 247
+  orig: 567, 437
+  offset: 54, 80
+  index: -1
+shilao_34
+  rotate: false
+  xy: 508, 1402
+  size: 462, 246
+  orig: 567, 437
+  offset: 61, 80
+  index: -1
+shilao_36
+  rotate: false
+  xy: 1014, 1402
+  size: 447, 221
+  orig: 567, 437
+  offset: 67, 82
+  index: -1
