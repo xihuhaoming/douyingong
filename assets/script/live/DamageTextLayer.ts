@@ -2,6 +2,8 @@ import {
     _decorator,
     Color,
     Component,
+    Font,
+    Graphics,
     HorizontalTextAlignment,
     Label,
     Node,
@@ -11,6 +13,7 @@ import {
     VerticalTextAlignment,
 } from 'cc';
 import { DamageTextItem } from './DamageTextItem';
+import { GraphicsNumber } from './GraphicsNumber';
 
 const { ccclass, property } = _decorator;
 
@@ -35,7 +38,7 @@ export class DamageTextLayer extends Component {
     height = 80;
 
     @property({ tooltip: '字号' })
-    fontSize = 48;
+    fontSize = 22;
 
     @property({ tooltip: '上浮高度（px）' })
     rise = 90;
@@ -76,6 +79,52 @@ export class DamageTextLayer extends Component {
     @property({ tooltip: '暴击额外放大倍数' })
     critExtraScale = 0.25;
 
+    // ------------------------------------------------ 外观（想更炫就调这里）
+
+    @property({ tooltip: '用代码现画的数码字（免字体资源）；关掉就走 Label 文本' })
+    useGraphicsDigits = true;
+
+    @property({ type: Font, tooltip: '走 Label 模式时的自定义字体（ttf），留空 = 系统粗体' })
+    font: Font | null = null;
+
+    @property({ tooltip: '描边宽度（px），0 = 不描边。手机上建议 2~4' })
+    outlineWidth = 3;
+
+    @property({ type: Color, tooltip: '描边颜色（深色描边是飘字变清楚的关键）' })
+    outlineColor: Color = new Color(24, 14, 44, 255);
+
+    @property({ tooltip: '加投影（更立体，但多一次绘制）' })
+    enableShadow = true;
+
+    @property({ tooltip: '暴击额外加的字号' })
+    critExtraFontSize = 6;
+
+    // ------------------------------------------------ 数码字样式（useGraphicsDigits 生效）
+
+    @property({ tooltip: '数码字笔画粗细（px），6 = 细体' })
+    digitThickness = 6;
+
+    @property({ tooltip: '数码字描边宽度（px）' })
+    digitOutline = 2;
+
+    @property({ type: Color, tooltip: '数码字描边颜色（白描边 = 数字外面一圈亮边）' })
+    digitOutlineColor: Color = new Color(255, 255, 255, 255);
+
+    @property({ tooltip: '数码字倾斜角度（度）' })
+    digitSkew = 10;
+
+    @property({ tooltip: '数码字外发光粗细（px），0 = 不发光' })
+    digitGlow = 0;
+
+    @property({ tooltip: '横向漂移范围（px），数字会往两边散开一点' })
+    driftRange = 44;
+
+    @property({ tooltip: '出现时的倾斜角度范围（度），会迅速回正' })
+    rotRange = 9;
+
+    @property({ tooltip: '暴击时的左右抖动幅度（px）' })
+    critShake = 5;
+
     private pool: Node[] = [];
 
     onDestroy() {
@@ -99,6 +148,7 @@ export class DamageTextLayer extends Component {
         // 飘字永远压在最上面，避免被后出的特效盖住
         node.setSiblingIndex(this.node.children.length - 1);
         node.setPosition(this.toLocal(worldPos, crit));
+        item.setFontSize(this.fontSize + (crit ? this.critExtraFontSize : 0));
 
         item.play(
             '-' + Math.round(value),
@@ -110,6 +160,9 @@ export class DamageTextLayer extends Component {
                 popScale: this.popScale + (crit ? this.critExtraScale : 0),
                 endScale: this.endScale,
                 fadeStart: this.fadeStart,
+                driftX: (Math.random() - 0.5) * this.driftRange,
+                rotation: (Math.random() - 0.5) * 2 * this.rotRange * (crit ? 1.5 : 1),
+                shake: crit ? this.critShake : 0,
             },
             () => this.back(item),
         );
@@ -137,14 +190,45 @@ export class DamageTextLayer extends Component {
         node.layer = this.node.layer;
         node.addComponent(UITransform).setContentSize(this.width, this.height);
 
-        const label = node.addComponent(Label);
-        label.fontSize = this.fontSize;
-        label.lineHeight = this.fontSize + 6;
-        label.isBold = true;
-        label.horizontalAlign = HorizontalTextAlignment.CENTER;
-        label.verticalAlign = VerticalTextAlignment.CENTER;
-        label.overflow = Label.Overflow.SHRINK;
-        label.cacheMode = Label.CacheMode.CHAR;
+        if (this.useGraphicsDigits) {
+            // 免字体：Graphics 现画的数码管数字（描边/发光/高光都在组件里）
+            node.addComponent(Graphics);
+            const gn = node.addComponent(GraphicsNumber);
+            gn.digitHeight = this.fontSize;
+            gn.thickness = this.digitThickness;
+            gn.outlineWidth = this.digitOutline;
+            gn.outlineColor = this.digitOutlineColor;
+            gn.skew = this.digitSkew;
+            gn.glowWidth = this.digitGlow;
+        } else {
+            const label = node.addComponent(Label);
+            label.fontSize = this.fontSize;
+            label.lineHeight = this.fontSize + 6;
+            label.isBold = true;
+            label.horizontalAlign = HorizontalTextAlignment.CENTER;
+            label.verticalAlign = VerticalTextAlignment.CENTER;
+            label.overflow = Label.Overflow.SHRINK;
+            label.cacheMode = Label.CacheMode.CHAR;
+
+            // 自定义字体优先；没有就用系统粗体
+            if (this.font) {
+                label.font = this.font;
+                label.useSystemFont = false;
+            }
+
+            // 深色描边 + 投影：飘字压在任何背景上都清楚
+            if (this.outlineWidth > 0) {
+                label.enableOutline = true;
+                label.outlineColor = this.outlineColor;
+                label.outlineWidth = this.outlineWidth;
+            }
+            if (this.enableShadow) {
+                label.enableShadow = true;
+                label.shadowColor = new Color(0, 0, 0, 150);
+                label.shadowOffset.set(2, -2);
+                label.shadowBlur = 0;
+            }
+        }
 
         node.addComponent(UIOpacity);
         const item = node.addComponent(DamageTextItem);

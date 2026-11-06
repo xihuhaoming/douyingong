@@ -3,20 +3,26 @@ import {
     clamp,
     Color,
     Component,
-    gfx,
     Node,
     Sprite,
     tween,
     Tween,
+    SpriteFrame,
     UIOpacity,
     UITransform,
     Vec3,
 } from 'cc';
+import { SpriteSheetAnimation } from '../SpriteSheetAnimation';
 
-const { ccclass } = _decorator;
+const { ccclass, property } = _decorator;
 
-/** 白闪用的颜色常量，避免每次受击都 new */
-const FLASH_WHITE = new Color(255, 255, 255, 255);
+/**
+ * 受击闪烁色。
+ * 注意：Cocos 3.8 的 Sprite 已经移除了 srcBlendFactor / dstBlendFactor，
+ * 没法做「加色混合的白闪」（纯白 tint 等于原色，看不出效果），
+ * 所以这里用偏暖的亮色，压在暗色小兵身上能明显看到一下"发亮"。
+ */
+const DAMAGE_TINT = new Color(255, 214, 150, 255);
 
 /** 一次出场流程的参数，由 CampBattle 组装好传进来 */
 export interface SoldierRunOptions {
@@ -44,10 +50,32 @@ export class SoldierUnit extends Component {
     /** 属于哪一方：-1 左 / +1 右（CampBattle 生成时写入） */
     side = 1;
 
+    // ------------------------------------------------ 交战动画
+
+    @property({ type: SpriteFrame, tooltip: '攻击动画序列图（留空 = 不切动画）' })
+    attackSheet: SpriteFrame | null = null;
+
+    @property({ tooltip: '攻击动画单帧宽（0 = 用行走动画的帧宽）' })
+    attackFrameWidth = 0;
+
+    @property({ tooltip: '攻击动画单帧高（0 = 用行走动画的帧高）' })
+    attackFrameHeight = 0;
+
+    @property({ tooltip: '攻击动画 fps' })
+    attackFps = 12;
+
+    @property({ tooltip: '攻击动画是否循环' })
+    attackLoop = true;
+
     private baseScaleX = 1;
     private baseScaleY = 1;
     private sprite: Sprite | null = null;
     private opacity: UIOpacity | null = null;
+
+    /** 帧动画组件（切换行走/攻击用） */
+    private anim: SpriteSheetAnimation | null = null;
+    /** 当前是否处于交战状态 */
+    private inCombat = false;
 
     /** 落地 tween 进行中：这期间不接受前进指令，否则两套逻辑会抢 position */
     private landing = false;
@@ -67,9 +95,7 @@ export class SoldierUnit extends Component {
     /** 死亡中：停止一切自主位移 */
     private dying = false;
 
-    /** 受击白闪的叠加层（第一次受击时建，之后复用） */
-    private flash: Sprite | null = null;
-    private flashNode: Node | null = null;
+
 
     /** 当前受击位移（局部 x，正 = 往右），阻尼回弹到 0 */
     private recoilX = 0;
@@ -90,6 +116,7 @@ export class SoldierUnit extends Component {
         this.bobPhase = 0;
         this.recoilX = 0;
         this.recoilApplied = 0;
+        this.restoreCombat();
         this.baseY = o.to.y;
 
         n.active = true;
@@ -141,69 +168,76 @@ export class SoldierUnit extends Component {
         this.bobPhase = 0;
         this.recoilX = 0;
         this.recoilApplied = 0;
-        this.hideFlash();
+        this.restoreCombat();
+        this.restoreTint();
         this.resetVisual();
         this.node.active = false;
     }
 
     /**
-     * 受击反馈：整个人白闪一下 + 被推得往后退一点。
+     * 受击反馈：闪一下亮色 + 被推得往后退一点。
      * 往后的方向就是远离中线：左方（side = -1）往左退，右方往右退。
      */
     showDamage() {
-        this.flashWhite();
+        this.flashTint();
         this.recoilX = clamp(this.recoilX + this.side * 14, -30, 30);
     }
 
-    /** 白闪：用一层同贴图的叠加（ADD）Sprite 铺在身上，比改 color 更明显 */
-    private flashWhite() {
+    /**
+     * 交战状态切换：有敌人靠近就播攻击动画，脱离就还原行走动画。
+     * 由 CampBattle 每帧按双方距离驱动，这里只负责换图。
+     */
+    /** 当前是否在交战（只读，给外部做调试/统计用） */
+    get combat(): boolean {
+        return this.inCombat;
+    }
+
+    setCombat(on: boolean) {
+        if (this.inCombat === on) return;
+        if (this.dying || this.landing) return;
+        if (on && !this.attackSheet) return;
+
+        this.inCombat = on;
+
+        if (!this.anim) this.anim = this.getComponent(SpriteSheetAnimation);
+        if (!this.anim) return;
+
+        if (on) {
+            this.anim.playSheet(
+                this.attackSheet,
+                this.attackFrameWidth || this.anim.frameWidth,
+                this.attackFrameHeight || this.anim.frameHeight,
+                this.attackFps,
+                this.attackLoop,
+                0,
+                true,
+            );
+        } else {
+            this.anim.playOriginal();
+        }
+    }
+
+    /** 回到非交战状态（出场 / 回收时调） */
+    private restoreCombat() {
+        this.inCombat = false;
+        if (!this.anim) this.anim = this.getComponent(SpriteSheetAnimation);
+        this.anim?.playOriginal();
+    }
+
+    /** 受击闪一下：tint 到暖亮色，0.09s 后恢复（3.8 已移除加色混合 API，做不了纯白闪） */
+    private flashTint() {
         const sp = this.getSprite();
-        const f = sp ? this.getFlash(sp) : null;
-        if (!f) return;
+        if (!sp) return;
 
-        f.spriteFrame = sp!.spriteFrame;
-        f.color = FLASH_WHITE;
-
-        const ut = this.node.getComponent(UITransform);
-        const fut = f.node.getComponent(UITransform);
-        if (ut && fut) fut.setContentSize(ut.contentSize);
-
-        f.node.active = true;
-        this.unschedule(this.hideFlash);
-        this.scheduleOnce(this.hideFlash, 0.09);
+        sp.color = DAMAGE_TINT;
+        this.unschedule(this.restoreTint);
+        this.scheduleOnce(this.restoreTint, 0.09);
     }
 
-    private hideFlash = () => {
-        if (this.flashNode && this.flashNode.isValid) this.flashNode.active = false;
+    private restoreTint = () => {
+        const sp = this.getSprite();
+        if (sp) sp.color = Color.WHITE;
     };
-
-    /** 懒创建白闪层：子节点 + Sprite，加色混合，只用来闪一下 */
-    private getFlash(main: Sprite): Sprite | null {
-        if (this.flash) return this.flash;
-
-        const n = new Node('HitFlash');
-        n.layer = this.node.layer;
-        n.setParent(this.node, false);
-        n.setPosition(0, 0, 0);
-
-        const ut = n.addComponent(UITransform);
-        const mainUt = this.node.getComponent(UITransform);
-        if (mainUt) ut.setContentSize(mainUt.contentSize);
-
-        const f = n.addComponent(Sprite);
-        f.type = Sprite.Type.SIMPLE;
-        f.sizeMode = Sprite.SizeMode.CUSTOM;
-        f.spriteFrame = main.spriteFrame;
-        f.color = FLASH_WHITE;
-        // 加色混合：叠在原图上只会更亮，配合 alpha 就是"被打白"的感觉
-        f.srcBlendFactor = gfx.BlendFactor.SRC_ALPHA;
-        f.dstBlendFactor = gfx.BlendFactor.ONE;
-
-        n.active = false;
-        this.flashNode = n;
-        this.flash = f;
-        return f;
-    }
 
     /** 受击位移：阻尼回弹，位移量以增量的方式叠到节点坐标上，不干扰走位 */
     private tickRecoil(dt: number) {
@@ -239,7 +273,7 @@ export class SoldierUnit extends Component {
         this.bobOn = false;
         this.recoilX = 0;
         this.recoilApplied = 0;
-        this.hideFlash();
+        this.restoreTint();
         Tween.stopAllByTarget(n);
 
         const sp = this.getSprite();

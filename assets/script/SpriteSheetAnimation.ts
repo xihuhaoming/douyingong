@@ -61,6 +61,17 @@ export class SpriteSheetAnimation extends Component {
     @property()
     public totalFrames: number = 0;
 
+    // ------------------------------------------------ 按行列等分（图不是整数倍时用）
+
+    @property({ tooltip: '按列数/行数等分切图（勾上后忽略 frameWidth / frameHeight）' })
+    public useGrid: boolean = false;
+
+    @property({ tooltip: '列数（横向几帧）' })
+    public gridColumns: number = 5;
+
+    @property({ tooltip: '行数（纵向几帧）' })
+    public gridRows: number = 1;
+
     @property()
     public playOnLoad: boolean = true;
 
@@ -81,6 +92,9 @@ export class SpriteSheetAnimation extends Component {
     private _rows: number = 1;
     /** 实际使用的总帧数 */
     private _frameCount: number = 1;
+    /** 单帧实际宽高（等分模式下由图片尺寸 / 列行数得来，可能是小数） */
+    private _cellW: number = 0;
+    private _cellH: number = 0;
     /** 累积时间 */
     private _accTime: number = 0;
     /** 是否正在播放 */
@@ -90,6 +104,14 @@ export class SpriteSheetAnimation extends Component {
     /** 克隆出来的 SpriteFrame，避免修改到共享资源 */
     private _clonedFrame: SpriteFrame | null = null;
     private _sprite: Sprite | null = null;
+
+    /** Inspector 上配置的原始参数，切图后用来还原 */
+    private _originSheet: SpriteFrame | null = null;
+    private _originFrameWidth = 128;
+    private _originFrameHeight = 128;
+    private _originFps = 10;
+    private _originLoop = true;
+    private _originTotalFrames = 0;
 
     public get frameIndex(): number { return this._frameIndex; }
     public get frameCount(): number { return this._frameCount; }
@@ -116,13 +138,21 @@ export class SpriteSheetAnimation extends Component {
         // 关闭动态图集打包，否则纹理被合入图集后 rect 坐标会错位/失效
         this._clonedFrame.packable = false;
 
+        // 记住原始配置，之后可以 playOriginal() 还原
+        this._originSheet = this.spriteFrame;
+        this._originFrameWidth = this.frameWidth;
+        this._originFrameHeight = this.frameHeight;
+        this._originFps = this.fps;
+        this._originLoop = this.loop;
+        this._originTotalFrames = this.totalFrames;
+
         this.calcFrames();
 
         if (this.fitNodeSize && this._sprite) {
             // 单帧按原始像素大小显示，避免被拉伸成整图大小
             this._sprite.sizeMode = Sprite.SizeMode.CUSTOM;
             const ut = this.node.getComponent(UITransform) || this.node.addComponent(UITransform);
-            ut.setContentSize(this.frameWidth, this.frameHeight);
+            ut.setContentSize(this._cellW || this.frameWidth, this._cellH || this.frameHeight);
         }
 
         this._sprite!.spriteFrame = this._clonedFrame;
@@ -160,11 +190,24 @@ export class SpriteSheetAnimation extends Component {
         const texW = tex ? tex.width : this.spriteFrame.rect.width;
         const texH = tex ? tex.height : this.spriteFrame.rect.height;
 
-        const fw = Math.max(this.frameWidth, 1);
-        const fh = Math.max(this.frameHeight, 1);
+        let fw: number;
+        let fh: number;
 
-        this._columns = Math.max(1, Math.floor(texW / fw + 0.001));
-        this._rows = Math.max(1, Math.floor(texH / fh + 0.001));
+        if (this.useGrid) {
+            // 等分模式：图片宽 / 列数、高 / 行数，允许小数（1190/5=238、449/2=224.5 这种）
+            this._columns = Math.max(1, Math.floor(this.gridColumns));
+            this._rows = Math.max(1, Math.floor(this.gridRows));
+            fw = texW / this._columns;
+            fh = texH / this._rows;
+        } else {
+            fw = Math.max(this.frameWidth, 1);
+            fh = Math.max(this.frameHeight, 1);
+            this._columns = Math.max(1, Math.floor(texW / fw + 0.001));
+            this._rows = Math.max(1, Math.floor(texH / fh + 0.001));
+        }
+
+        this._cellW = fw;
+        this._cellH = fh;
 
         const auto = this._columns * this._rows;
         this._frameCount = this.totalFrames > 0
@@ -185,7 +228,7 @@ export class SpriteSheetAnimation extends Component {
             console.warn(`[SpriteSheetAnimation] 只算出 ${this._frameCount} 帧！` +
                 `请检查 frameWidth/frameHeight（${fw}x${fh}）是否等于图片里"单帧格子"的真实像素大小。` +
                 `当前图片是 ${texW}x${texH}。`);
-        } else if (texW % fw !== 0 || texH % fh !== 0) {
+        } else if (!this.useGrid && (texW % fw !== 0 || texH % fh !== 0)) {
             console.warn(`[SpriteSheetAnimation] 图片尺寸（${texW}x${texH}）不是每帧大小（${fw}x${fh}）的整数倍，` +
                 `取整后可能导致边缘帧错位。建议每帧大小 = 图片宽高分别除以列数/行数。`);
         }
@@ -232,8 +275,8 @@ export class SpriteSheetAnimation extends Component {
     private applyFrame(): void {
         if (!this._clonedFrame || !this.spriteFrame) return;
 
-        const fw = this.frameWidth;
-        const fh = this.frameHeight;
+        const fw = this._cellW || this.frameWidth;
+        const fh = this._cellH || this.frameHeight;
         const col = this._frameIndex % this._columns;
         const row = Math.floor(this._frameIndex / this._columns);
 
@@ -291,5 +334,67 @@ export class SpriteSheetAnimation extends Component {
     public setFrame(index: number): void {
         this._frameIndex = clamp(Math.floor(index), 0, this._frameCount - 1);
         this.applyFrame();
+    }
+
+    /**
+     * 临时切到另一张序列图（比如攻击动画）。
+     *
+     * 不会改节点尺寸，所以**攻击图的单帧像素尺寸最好和原始动画一致**，
+     * 否则会被拉伸/压扁（想让攻击帧更大就换一张同尺寸的图，或者自己改 scale）。
+     *
+     * @param quiet 不打印"图片 x 帧"那行日志（切换动画时建议 true，避免刷屏）
+     */
+    public playSheet(
+        sheet: SpriteFrame | null,
+        frameWidth: number,
+        frameHeight: number,
+        fps = 12,
+        loop = true,
+        totalFrames = 0,
+        quiet = true,
+    ): void {
+        if (!this._sprite) this._sprite = this.getComponent(Sprite);
+        if (!sheet || !this._sprite) return;
+
+        // 释放旧的克隆帧
+        this._clonedFrame?.decRef();
+
+        this.spriteFrame = sheet;
+        this.frameWidth = Math.max(1, frameWidth);
+        this.frameHeight = Math.max(1, frameHeight);
+        this.fps = Math.max(0.01, fps);
+        this.loop = loop;
+        this.totalFrames = Math.max(0, totalFrames);
+
+        this._clonedFrame = sheet.clone();
+        this._clonedFrame.name = `${sheet.name}(runtime)`;
+        this._clonedFrame.packable = false;
+
+        this._frameIndex = 0;
+        this._accTime = 0;
+        this._pingPongStep = 1;
+
+        const debug = this.debugLog;
+        if (quiet) this.debugLog = false;
+        this.calcFrames();
+        this.debugLog = debug;
+
+        this._sprite.spriteFrame = this._clonedFrame;
+        this._playing = true;
+        this.applyFrame();
+    }
+
+    /** 还原成 Inspector 上配置的原始动画 */
+    public playOriginal(quiet = true): void {
+        if (!this._originSheet) return;
+        this.playSheet(
+            this._originSheet,
+            this._originFrameWidth,
+            this._originFrameHeight,
+            this._originFps,
+            this._originLoop,
+            this._originTotalFrames,
+            quiet,
+        );
     }
 }

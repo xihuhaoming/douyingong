@@ -16,6 +16,7 @@ import {
     view,
 } from 'cc';
 import { liveEventBus, LiveUserEvent } from './LiveEventBus';
+import { BattleFormation } from './BattleFormation';
 import { SoldierUnit } from './SoldierUnit';
 import { SkillProjectile } from './SkillProjectile';
 import { GiftEffectManager } from './GiftEffectManager';
@@ -69,6 +70,14 @@ export class CampBattle extends Component {
     @property({ type: Prefab, tooltip: '右方小兵 prefab（空 = 用 soldierPrefab）' })
     rightSoldierPrefab: Prefab | null = null;
 
+    // ------------------------------------------------ 对象池
+
+    @property({ tooltip: '每种兵最多缓存多少个（超出直接销毁，防止无限出兵把池子撑爆）' })
+    maxPooledPerPrefab = 40;
+
+    @property({ tooltip: '开局预热多少个兵（每边），减少前几次出兵的卡顿；0 = 不预热' })
+    prewarmPerSide = 6;
+
     @property({ type: Node, tooltip: '左方出生点 / 出生区域（UITransform 的宽高就是随机范围）' })
     leftRoot: Node | null = null;
 
@@ -87,8 +96,37 @@ export class CampBattle extends Component {
     })
     soldierRoot: Node | null = null;
 
-    @property({ type: Prefab, tooltip: '技能弹体 prefab（空 = 代码生成占位圆球）' })
+    @property({ type: Prefab, tooltip: '技能弹体 prefab（兜底；左右没单独配时用它，空 = 代码生成占位圆球）' })
     projectilePrefab: Prefab | null = null;
+
+    @property({ type: Prefab, tooltip: '左方弹体 prefab（空 = 用上面的兜底）' })
+    leftProjectilePrefab: Prefab | null = null;
+
+    @property({ type: Prefab, tooltip: '右方弹体 prefab（空 = 用上面的兜底）' })
+    rightProjectilePrefab: Prefab | null = null;
+
+    // ------------------------------------------------ 命中爆炸（独立 spine）
+
+    @property({
+        type: Prefab,
+        tooltip: '左方命中爆炸 prefab。配了就用它（独立 spine），不再播弹体自身的 boom',
+    })
+    leftBoomPrefab: Prefab | null = null;
+
+    @property({ type: Prefab, tooltip: '右方命中爆炸 prefab' })
+    rightBoomPrefab: Prefab | null = null;
+
+    @property({ tooltip: '左方爆炸 spine 动画名（留空 = 用 prefab 上 Spine 组件的默认动画）' })
+    leftBoomAnim = '';
+
+    @property({ tooltip: '右方爆炸 spine 动画名（留空 = 默认动画）' })
+    rightBoomAnim = '';
+
+    @property({ tooltip: '左方爆炸特效时长（秒，要 ≥ spine 动画实际长度，否则会播一半被回收）' })
+    leftBoomSeconds = 0.8;
+
+    @property({ tooltip: '右方爆炸特效时长（秒）' })
+    rightBoomSeconds = 0.8;
 
     @property({ tooltip: '小兵贴图默认朝向：画的是朝右就勾上' })
     artFaceRight = true;
@@ -106,6 +144,31 @@ export class CampBattle extends Component {
 
     @property({ tooltip: '小兵碰撞半径（px），同时决定最前排离空气墙多远' })
     unitRadius = 90;
+
+    @property({
+        tooltip: '双方小兵中心距离小于这个值（px）就切攻击动画。最前排贴脸时约 2×(unitRadius-wallOverlap/2)',
+    })
+    contactRange = 200;
+
+    @property({ tooltip: '打印"小兵进入交战"的日志，调试用' })
+    debugLogContact = false;
+
+    // ------------------------------------------------ 矩形活动区域（空气墙）
+
+    @property({
+        type: Node,
+        tooltip: '活动区域：拖一个铺满可视区的空节点（用它的 UITransform 矩形）；空 = 用全屏 + 下面的留白',
+    })
+    playArea: Node | null = null;
+
+    @property({ tooltip: '左右留白（px），防止贴边被裁' })
+    areaPaddingX = 40;
+
+    @property({ tooltip: '上边留白（px），给顶部血条/头像让位' })
+    areaPaddingTop = 120;
+
+    @property({ tooltip: '下边留白（px），一般是底部按钮/抽屉的高度' })
+    areaPaddingBottom = 230;
 
     // ------------------------------------------------ 阵型站位
 
@@ -127,7 +190,7 @@ export class CampBattle extends Component {
     // ------------------------------------------------ 战斗数值
 
     @property({ tooltip: '每个小兵的满血量' })
-    soldierMaxHp = 100;
+    soldierMaxHp = 1000;
 
     @property({ tooltip: '单发技能的基础伤害下限' })
     damageMin = 10;
@@ -176,6 +239,11 @@ export class CampBattle extends Component {
 
     @property({ tooltip: '范围边缘伤害系数（0~1），1 = 不衰减' })
     damageFalloff = 0.6;
+
+    // ------------------------------------------------ 道具技能（外部调用）
+
+    @property({ tooltip: '本地玩家阵营：-1 左 / +1 右。道具技能会打向对面' })
+    mySide = -1;
 
     // ------------------------------------------------ 出兵交互
 
@@ -254,23 +322,24 @@ export class CampBattle extends Component {
     /** 出生区域只在第一次算到时打一条日志，避免刷屏 */
     private areaLogged = false;
 
-    /** 每一侧的站位占用表：下标 = 站位编号，值 = 站在这里的兵 */
-    private slotUnits: { [side: number]: (Fighter | null)[] } = { '-1': [], '1': [] };
-    /** 每一侧当前开了多少格子（无限模式会在满了以后自动加行） */
-    private slotCap: { [side: number]: number } = { '-1': 0, '1': 0 };
-    /** 阵型第 0 行的世界 y，开局定一次；之后加行只往下长，老站位不动 */
-    private rowTopY: number | null = null;
+    /** 复用同一个 Vec3 做区域夹紧，避免每帧 new */
+    private tmpClamp = new Vec3();
+
     /** 站位满了只警告一次 */
     private slotFullWarned = false;
-    /** 复用同一个 Vec3 算站位，避免每帧 new */
-    private tmpPos = new Vec3();
+    /** 阵型（纯逻辑类，具体见 BattleFormation.ts） */
+    private formation!: BattleFormation<Fighter>;
 
     /** 在飞的弹体 */
     private flights: Flight[] = [];
-    /** 弹体对象池 */
-    private projPool: SkillProjectile[] = [];
+    /** 弹体对象池：按 prefab 分池，左右两套外观不会串 */
+    private projPools = new Map<Prefab, SkillProjectile[]>();
+    /** 弹体 → 它来自哪个 prefab（回收时才知道该还到哪个池） */
+    private projOwner = new Map<SkillProjectile, Prefab>();
 
     onLoad() {
+        this.initFormation();
+
         liveEventBus.onUser('boost', this.onBoost);
         liveEventBus.onUser('enter', this.onEnter);
         if (this.tapToBoost) {
@@ -279,12 +348,10 @@ export class CampBattle extends Component {
     }
 
     start() {
-        const cap = this.slotCount();
-        // 初始格子数 = formationCols x formationRows；后面不够会自动加行
-        this.slotCap['-1'] = cap;
-        this.slotCap['1'] = cap;
-        this.rowTopY = null;
+        this.syncFormation();
+        this.formation.reset();
 
+        const cap = this.formation.baseSlotCount;
         if (!this.unlimited && this.maxAlivePerSide > 0 && cap < this.maxAlivePerSide) {
             console.warn(
                 `[CampBattle] 阵型初始只有 ${cap} 个站位（${this.formationCols}列 x ${this.formationRows}行），` +
@@ -292,6 +359,8 @@ export class CampBattle extends Component {
                     `想让阵型长度固定，把 maxAlivePerSide 调到 ${cap} 或更小。`,
             );
         }
+        this.prewarm();
+
         const n = Math.floor(this.initialSoldiersPerSide);
         for (let i = 0; i < n; i++) {
             this.spawnSoldier(-1);
@@ -437,128 +506,45 @@ export class CampBattle extends Component {
         return { from, to, seconds: Math.max(0.15, this.dropSeconds) };
     }
 
-    // ------------------------------------------------ 阵型站位
+    // ------------------------------------------------ 阵型
 
-    /** 一侧的站位总数 */
-    private slotCount(): number {
-        return Math.max(1, Math.floor(this.formationCols)) * Math.max(1, Math.floor(this.formationRows));
+    /** 创建阵型对象：Inspector 的配置喂给纯逻辑类，墙位置 / 纵向中心用 getter 实时取 */
+    private initFormation() {
+        if (this.formation) return;
+
+        this.formation = new BattleFormation<Fighter>({
+            side: -1,
+            cols: this.formationCols,
+            rows: this.formationRows,
+            colSpacing: this.colSpacing,
+            rowSpacing: this.rowSpacing,
+            unitRadius: this.unitRadius,
+            wallOverlap: this.wallOverlap,
+            unlimited: this.unlimited || this.maxAlivePerSide <= 0,
+            wallX: () => this.wallWorldX(),
+            centerY: () => this.node.worldPosition.y + this.formationCenterY,
+        });
     }
 
-    /**
-     * 第 index 个站位的世界坐标。
-     * 编号规则（行优先）：index = row * cols + col，
-     *   col 0 = 最前排（贴空气墙），越往后越大；row 0 = 最上面那一行。
-     * 这样同一行的兵编号连续，补位时只在行内往前顶，纵向不会乱跳。
-     *
-     * 返回的是复用的临时 Vec3，拿到后请立刻取值，别存着跨帧用。
-     */
-    private slotPos(side: number, index: number): Vec3 {
+    /** 把 Inspector 上的阵型数值同步给纯逻辑类（运行中改了也能生效） */
+    private syncFormation(side = -1) {
+        this.initFormation();
+
+        // 无限出兵时也不能超出活动区域：按「区域高度 / 行距」算行数上限
         const cols = Math.max(1, Math.floor(this.formationCols));
-        const rows = Math.max(1, Math.floor(this.formationRows));
-        const spacingY = Math.max(1, this.rowSpacing);
+        const maxRows = this.maxRowsByArea();
 
-        const i = Math.max(0, index);
-        const row = Math.floor(i / cols);
-        const col = i % cols;
-
-        const wallX = this.wallWorldX();
-        const r = Math.max(1, this.unitRadius);
-        const halfOverlap = Math.max(0, this.wallOverlap) / 2;
-        // 最前排离中线「小兵半径 - 交叠量/2」，后面的列再往自己后方退
-        const frontX = wallX + side * (r - halfOverlap);
-        const x = frontX + side * col * Math.max(1, this.colSpacing);
-
-        // 第 0 行按「formationCenterY 上下居中」定一次，之后新增行只往下一行行加，
-        // 已经在场上的兵不会被挪位置
-        if (this.rowTopY === null) {
-            this.rowTopY = this.node.worldPosition.y + this.formationCenterY + ((rows - 1) / 2) * spacingY;
-        }
-        const y = this.rowTopY - row * spacingY;
-        return this.tmpPos.set(x, y, 0);
-    }
-
-    /**
-     * 找一个离落点最近的空站位。
-     * 无限模式（maxAlivePerSide <= 0）下，格子用完了会往后加一行再找；
-     * 有限模式满了返回 -1。
-     */
-    private allocSlot(side: number, at: Vec3): number {
-        const arr = this.slotUnits[side] || (this.slotUnits[side] = []);
-        const cols = Math.max(1, Math.floor(this.formationCols));
-        const unlimited = this.unlimited || this.maxAlivePerSide <= 0;
-
-        // 最多加 64 行，防止配置异常时死循环
-        for (let grow = 0; grow < 64; grow++) {
-            const cap = Math.max(this.slotCap[side], cols);
-            this.slotCap[side] = cap;
-            while (arr.length < cap) arr.push(null);
-
-            let best = -1;
-            let bestDist = Infinity;
-            for (let i = 0; i < cap; i++) {
-                if (arr[i]) continue;
-                const p = this.slotPos(side, i);
-                const dx = p.x - at.x;
-                const dy = p.y - at.y;
-                const d = dx * dx + dy * dy;
-                if (d < bestDist) {
-                    bestDist = d;
-                    best = i;
-                }
-            }
-            if (best >= 0) return best;
-            if (!unlimited) return -1;
-
-            this.slotCap[side] = cap + cols; // 加一行
-        }
-        return -1;
-    }
-
-    /** 兵死了 / 被回收，把站位让出来 */
-    private freeSlot(f: Fighter) {
-        const arr = this.slotUnits[f.side];
-        if (arr && arr[f.slot] === f) arr[f.slot] = null;
-    }
-
-    /**
-     * 补位：把同一行里还活着的兵，从前往后重新排成 0、1、2… 号格。
-     * 只在「本行」内递补，所以兵的纵向位置不会跳，只是横向往前顶一格，
-     * 空出来的位置永远留在最后一列（也就是队尾）。
-     */
-    private compactSide(side: number) {
-        const cols = Math.max(1, Math.floor(this.formationCols));
-        const list = this.rows[side];
-
-        // 容量要覆盖「当前开了多少格」和「场上兵的最大编号」，加过行的话不能缩回去
-        let need = Math.max(this.slotCap[side], cols);
-        for (const f of list) need = Math.max(need, f.slot + 1);
-        need = Math.ceil(need / cols) * cols;
-        this.slotCap[side] = need;
-
-        const rows = need / cols;
-        const next: (Fighter | null)[] = new Array(need).fill(null);
-        if (!list.length) {
-            this.slotUnits[side] = next;
-            return;
-        }
-
-        for (let r = 0; r < rows; r++) {
-            // 先收集这一行现有的兵，再按原来的列号从前往后重排
-            const inRow: Fighter[] = [];
-            for (const f of list) {
-                if (Math.floor(f.slot / cols) === r) inRow.push(f);
-            }
-            if (!inRow.length) continue;
-
-            inRow.sort((a, b) => a.slot - b.slot);
-            for (let c = 0; c < inRow.length && c < cols; c++) {
-                const f = inRow[c];
-                f.slot = r * cols + c;
-                next[f.slot] = f;
-            }
-        }
-
-        this.slotUnits[side] = next;
+        this.formation.setOptions({
+            side: side > 0 ? 1 : -1,
+            cols: this.formationCols,
+            rows: this.formationRows,
+            colSpacing: this.colSpacing,
+            rowSpacing: this.rowSpacing,
+            unitRadius: this.unitRadius,
+            wallOverlap: this.wallOverlap,
+            unlimited: this.unlimited || this.maxAlivePerSide <= 0,
+            maxSlots: cols * maxRows,
+        });
     }
 
     // ------------------------------------------------ 出兵
@@ -566,6 +552,26 @@ export class CampBattle extends Component {
     /** 这一方用哪个小兵 prefab：优先各自配置，其次兜底，再没有就出不了兵 */
     private prefabFor(side: number): Prefab | null {
         return (side > 0 ? this.rightSoldierPrefab : this.leftSoldierPrefab) || this.soldierPrefab;
+    }
+
+    /**
+     * 开局预热：先把节点实例化出来再 sleep 回池子，
+     * 这样前几次出兵不用现场 instantiate（抖音小游戏首帧卡顿主要来自这里）。
+     */
+    private prewarm() {
+        const n = Math.max(0, Math.floor(this.prewarmPerSide));
+        if (n <= 0) return;
+
+        for (const side of [-1, 1]) {
+            const pf = this.prefabFor(side);
+            if (!pf) continue;
+
+            for (let i = 0; i < n; i++) {
+                const unit = this.take(pf);
+                unit.node.setParent(this.soldierRoot || this.node, false);
+                this.recycle(unit);
+            }
+        }
     }
 
     /**
@@ -650,13 +656,18 @@ export class CampBattle extends Component {
 
         // 先算落点 → 抢一个最近的空站位 → 才真去取节点，避免取出来又放不下
         const drop = this.resolveDrop(root, side, tap);
-        const slot = this.allocSlot(side, this.toWorldOf(root, drop.to));
+        // 落点也夹进活动区域：出生点贴着屏幕底部时，兵不会掉到画面外
+        const dropTo = this.clampRootLocal(root, drop.to);
+        const dropFrom = new Vec3(dropTo.x, dropTo.y + (drop.from.y - drop.to.y), 0);
+        const dropWorld = this.toWorldOf(root, dropTo);
+        this.syncFormation(side);
+        const slot = this.formation.alloc(dropWorld.x, dropWorld.y);
         if (slot < 0) {
             if (!this.slotFullWarned) {
                 this.slotFullWarned = true;
                 console.warn(
-                    `[CampBattle] ${side < 0 ? '左' : '右'}方阵型站满了（${this.slotCount()} 个站位），` +
-                        '这一波兵没出。调大 formationCols / formationRows 就行。',
+                    `[CampBattle] ${side < 0 ? '左' : '右'}方阵型站满了（${this.formation.capacity} 个站位），` +
+                        '这一波兵没出。想站更多人：调小 rowSpacing / 调大 PlayArea 高度 / 调大 formationCols。',
                 );
             }
             return;
@@ -677,14 +688,14 @@ export class CampBattle extends Component {
             slot,
         };
         list.push(fighter);
-        this.slotUnits[side][slot] = fighter;
+        this.formation.occupy(slot, fighter);
 
         // 左方要朝右（面向敌方），右方要朝左；两张图原图朝向可以不一样
         const artFaceRight = side < 0 ? this.artFaceRight : this.rightArtFaceRight;
         const faceRight = side < 0 ? artFaceRight : !artFaceRight;
         unit.run({
-            from: this.toLocalOf(parent, root, drop.from),
-            to: this.toLocalOf(parent, root, drop.to),
+            from: this.toLocalOf(parent, root, dropFrom),
+            to: this.toLocalOf(parent, root, dropTo),
             faceRight,
             walkSeconds: drop.seconds,
         });
@@ -697,9 +708,53 @@ export class CampBattle extends Component {
         this.march();
         this.tickAttack(dt);
         this.tickFlights();
+        this.updateContact();
         this.depthSort();
 
         if (this.hpDirty) this.refreshHpUi();
+    }
+
+    /**
+     * 交战判定：对面有人在自己 contactRange 内就切攻击动画，脱离就切回行走。
+     * 只改动画，不改位置和伤害（伤害照旧由 tickAttack 的弹体结算）。
+     */
+    private updateContact() {
+        const range = Math.max(1, this.contactRange);
+        const rr = range * range;
+
+        for (const side of [-1, 1]) {
+            const mine = this.rows[side];
+            if (!mine.length) continue;
+
+            const foes = this.rows[-side];
+            if (!foes.length) {
+                for (const f of mine) f.unit.setCombat(false);
+                continue;
+            }
+
+            for (const f of mine) {
+                const p = f.unit.node.worldPosition;
+                let near = false;
+
+                for (const g of foes) {
+                    const q = g.unit.node.worldPosition;
+                    const dx = p.x - q.x;
+                    const dy = p.y - q.y;
+                    if (dx * dx + dy * dy <= rr) {
+                        near = true;
+                        break;
+                    }
+                }
+
+                if (this.debugLogContact && near && !f.unit.combat) {
+                    console.log(
+                        `[CampBattle] ${side < 0 ? '左' : '右'}方小兵进入交战（${range}px 内有人）`,
+                    );
+                }
+
+                f.unit.setCombat(near);
+            }
+        }
     }
 
     /**
@@ -734,6 +789,75 @@ export class CampBattle extends Component {
         return this.centerWall ? this.centerWall.worldPosition.x : this.node.worldPosition.x;
     }
 
+    // ------------------------------------------------ 矩形活动区域
+
+    /** 活动区域（世界坐标，已扣掉四边留白） */
+    private playRect(): { minX: number; maxX: number; minY: number; maxY: number } {
+        const area = this.playArea;
+        const ut = area && area.isValid ? area.getComponent(UITransform) : null;
+
+        let minX: number;
+        let maxX: number;
+        let minY: number;
+        let maxY: number;
+
+        if (ut) {
+            const box = ut.getBoundingBoxToWorld();
+            minX = box.x;
+            maxX = box.x + box.width;
+            minY = box.y;
+            maxY = box.y + box.height;
+        } else {
+            // 没配区域：退化成「整个战斗层」
+            const size = this.battleSize();
+            const c = this.node.worldPosition;
+            minX = c.x - size.width / 2;
+            maxX = c.x + size.width / 2;
+            minY = c.y - size.height / 2;
+            maxY = c.y + size.height / 2;
+        }
+
+        const px = Math.max(0, this.areaPaddingX);
+        const pt = Math.max(0, this.areaPaddingTop);
+        const pb = Math.max(0, this.areaPaddingBottom);
+
+        return {
+            minX: minX + px,
+            maxX: Math.max(minX + px, maxX - px),
+            minY: minY + pb,
+            maxY: Math.max(minY + pb, maxY - pt),
+        };
+    }
+
+    /** 把世界坐标夹进活动区域（margin 是额外内缩，防止身体贴边被裁） */
+    private clampWorld(x: number, y: number, marginX = 0, marginY = 0): Vec3 {
+        const r = this.playRect();
+        const loX = r.minX + marginX;
+        const hiX = Math.max(loX, r.maxX - marginX);
+        const loY = r.minY + marginY;
+        const hiY = Math.max(loY, r.maxY - marginY);
+        return this.tmpClamp.set(clamp(x, loX, hiX), clamp(y, loY, hiY), 0);
+    }
+
+    /** 出生点局部坐标 → 夹进活动区域 → 再转回出生点局部坐标 */
+    private clampRootLocal(root: Node, v: Vec3): Vec3 {
+        const world = this.toWorldOf(root, v);
+        const cw = this.clampWorld(world.x, world.y, this.unitRadius * 0.5, this.unitRadius * 0.5);
+
+        const ut = root.getComponent(UITransform);
+        if (ut) return ut.convertToNodeSpaceAR(cw, new Vec3());
+
+        const rp = root.worldPosition;
+        return new Vec3(cw.x - rp.x, cw.y - rp.y, 0);
+    }
+
+    /** 区域高度内最多放几行（无限出兵时用来封顶） */
+    private maxRowsByArea(): number {
+        const r = this.playRect();
+        const h = Math.max(1, r.maxY - r.minY);
+        return Math.max(1, Math.floor(h / Math.max(1, this.rowSpacing)));
+    }
+
     /**
      * 每个兵朝自己的阵型站位走。
      * 站位是固定格子：最前排由空气墙 + unitRadius 决定，后面的列依次往自己后方退，
@@ -741,9 +865,14 @@ export class CampBattle extends Component {
      */
     private march() {
         for (const side of [-1, 1]) {
+            if (!this.rows[side].length) continue;
+
+            this.syncFormation(side);
             for (const f of this.rows[side]) {
-                const p = this.slotPos(side, f.slot);
-                f.unit.walkToWorldPos(p.x, p.y, this.moveSpeed);
+                const p = this.formation.position(f.slot);
+                // 夹进活动区域：阵型再怎么加行，也不会走出可视范围
+                const c = this.clampWorld(p.x, p.y, this.unitRadius * 0.5, this.unitRadius * 0.5);
+                f.unit.walkToWorldPos(c.x, c.y, this.moveSpeed);
             }
         }
     }
@@ -782,7 +911,7 @@ export class CampBattle extends Component {
         const duration = clamp(dist / Math.max(50, this.projectileSpeed), 0.22, 1.4);
         const arc = this.arcHeight * clamp(dist / 500, 0.35, 1.2);
 
-        const proj = this.takeProjectile();
+        const proj = this.takeProjectile(attacker.side);
         proj.setSide(attacker.side);
         proj.launch(from, to, duration, arc);
 
@@ -848,6 +977,16 @@ export class CampBattle extends Component {
             if (g.hp <= 0) dead.push(g);
         }
 
+        // 爆炸优先级：本方的独立爆炸 prefab → 弹体自身 boom 动画 → 老 hitEffect
+        const boomPrefab = this.boomPrefabFor(fl.side);
+        if (boomPrefab) {
+            const seconds = Math.max(0.2, fl.side > 0 ? this.rightBoomSeconds : this.leftBoomSeconds);
+            const anim = fl.side > 0 ? this.rightBoomAnim : this.leftBoomAnim;
+            this.fx?.playPrefab(boomPrefab, at.clone(), seconds, 0, anim);
+            this.recycleProjectile(fl.proj);
+            return;
+        }
+
         if (this.hitEffect) {
             this.fx?.playPrefab(this.hitEffect, at.clone(), 0.6);
         }
@@ -869,8 +1008,9 @@ export class CampBattle extends Component {
             }
             // 站位等到尸体淡出播完再释放，避免后面的兵直接踩到还在倒的尸身上
             f.unit.die(() => {
-                this.freeSlot(f);
-                this.compactSide(f.side);
+                this.formation.free(f);
+                this.syncFormation(f.side);
+                this.formation.compact(this.rows[f.side]);
                 this.recycle(f.unit);
             });
         }
@@ -887,6 +1027,122 @@ export class CampBattle extends Component {
             }
         }
         return false;
+    }
+
+    // ------------------------------------------------ 道具技能：范围伤害
+
+    /** 外部设置玩家阵营（接抖音登录 / 房间信息后调用） */
+    setMySide(side: number) {
+        this.mySide = side > 0 ? 1 : -1;
+    }
+
+    /** 敌方阵营 */
+    get enemySide(): number {
+        return this.mySide > 0 ? -1 : 1;
+    }
+
+    /** 某一阵营当前的人员中心；这边没人了就退回出生点 */
+    campCenter(side: number): Vec3 {
+        const list = this.rows[side];
+        if (!list || !list.length) {
+            const root = side > 0 ? this.rightRoot : this.leftRoot;
+            return root ? root.worldPosition.clone() : this.node.worldPosition.clone();
+        }
+
+        let x = 0;
+        let y = 0;
+        for (const f of list) {
+            const p = f.unit.node.worldPosition;
+            x += p.x;
+            y += p.y;
+        }
+        return new Vec3(x / list.length, y / list.length, 0);
+    }
+
+    /**
+     * 范围技能结算（道具/礼物技能走这里）。
+     *
+     * @param side     施放方（-1 左 / +1 右），只打对面
+     * @param at       爆点世界坐标
+     * @param radius   范围半径（px）
+     * @param damage   中心伤害（边缘按 damageFalloff 衰减）
+     * @param effect   特效 prefab（可空）
+     * @param effectSeconds 特效播放时长
+     * @param effectAnim spine 动画名（留空用 prefab 默认动画）
+     * @returns 打死了几个
+     */
+    castAreaDamage(
+        side: number,
+        at: Vec3,
+        radius: number,
+        damage: number,
+        effect: Prefab | null = null,
+        effectSeconds = 0.8,
+        effectAnim = '',
+    ): number {
+        const foes = this.rows[-side];
+        const range = Math.max(1, radius) + Math.max(1, this.unitRadius);
+        const falloff = clamp(this.damageFalloff, 0, 1);
+        const dead: Fighter[] = [];
+        let hitCount = 0;
+
+        for (const g of foes) {
+            const d = Vec3.distance(at, g.unit.node.worldPosition);
+            if (d > range) continue;
+
+            const k = 1 - (1 - falloff) * clamp(d / range, 0, 1);
+            const dmg = Math.max(1, Math.round(damage * k));
+
+            g.hp -= dmg;
+            g.unit.showDamage();
+            this.damageText?.show(g.unit.node.worldPosition, dmg);
+            hitCount++;
+
+            if (g.hp <= 0) dead.push(g);
+        }
+
+        if (effect) {
+            this.fx?.playPrefab(effect, at.clone(), effectSeconds, 0, effectAnim);
+        } else if (this.hitEffect) {
+            this.fx?.playPrefab(this.hitEffect, at.clone(), 0.6);
+        }
+
+        if (dead.length) this.killFighters(dead);
+        this.hpDirty = true;
+
+        console.log(
+            `[CampBattle] ${side < 0 ? '左' : '右'}方道具技能：命中 ${hitCount} 个，击杀 ${dead.length} 个`,
+        );
+        return dead.length;
+    }
+
+    /**
+     * 敌方阵营里的随机一点：优先挑一个活着的敌人，在它周围抖半个身位。
+     * 这样每次放技能落点都不一样，不会永远砸在正中间。
+     */
+    randomEnemyPoint(): Vec3 {
+        const foes = this.rows[this.enemySide];
+        if (!foes.length) return this.campCenter(this.enemySide);
+
+        const target = foes[Math.floor(Math.random() * foes.length)];
+        const p = target.unit.node.worldPosition.clone();
+        const r = Math.max(10, this.unitRadius * 0.5);
+
+        p.x += (Math.random() - 0.5) * r * 2;
+        p.y += (Math.random() - 0.5) * r * 2;
+        return p;
+    }
+
+    /** 道具技能快捷入口：随机落在敌方阵营里的某个位置 */
+    castSkillOnEnemy(
+        damage: number,
+        radius: number,
+        effect: Prefab | null = null,
+        effectSeconds = 0.8,
+        effectAnim = '',
+    ): number {
+        const at = this.randomEnemyPoint();
+        return this.castAreaDamage(this.mySide, at, radius, damage, effect, effectSeconds, effectAnim);
     }
 
     // ------------------------------------------------ 对外读数（背景推挤 / 结算用）
@@ -922,7 +1178,7 @@ export class CampBattle extends Component {
             const capped = !this.unlimited && this.maxAlivePerSide > 0;
             const fullCount = capped
                 ? this.maxAlivePerSide
-                : Math.max(this.slotCount(), list.length);
+                : Math.max(this.formation?.baseSlotCount ?? 1, list.length);
 
             const full = fullCount * this.soldierMaxHp;
             const label = side > 0 ? this.hpLabelR : this.hpLabelL;
@@ -934,17 +1190,37 @@ export class CampBattle extends Component {
 
     // ------------------------------------------------ 弹体对象池
 
-    private takeProjectile(): SkillProjectile {
-        const cached = this.projPool.pop();
-        if (cached) {
-            cached.node.active = true;
-            return cached;
+    /** 这一方用哪个弹体 prefab */
+    private projectilePrefabFor(side: number): Prefab | null {
+        return (side > 0 ? this.rightProjectilePrefab : this.leftProjectilePrefab) || this.projectilePrefab;
+    }
+
+    /** 这一方用哪个爆炸 prefab（没配返回 null → 走弹体自身的 boom 动画 / hitEffect） */
+    private boomPrefabFor(side: number): Prefab | null {
+        return side > 0 ? this.rightBoomPrefab : this.leftBoomPrefab;
+    }
+
+    private takeProjectile(side: number): SkillProjectile {
+        const pf = this.projectilePrefabFor(side);
+        const parent = this.skillLayer || this.node;
+
+        if (pf) {
+            let list = this.projPools.get(pf);
+            if (!list) {
+                list = [];
+                this.projPools.set(pf, list);
+            }
+            const cached = list.pop();
+            if (cached) {
+                cached.node.active = true;
+                this.projOwner.set(cached, pf);
+                return cached;
+            }
         }
 
-        const parent = this.skillLayer || this.node;
         let node: Node;
-        if (this.projectilePrefab) {
-            node = instantiate(this.projectilePrefab);
+        if (pf) {
+            node = instantiate(pf);
         } else {
             node = new Node('SkillProj');
             node.layer = parent.layer;
@@ -952,7 +1228,10 @@ export class CampBattle extends Component {
             node.addComponent(Graphics);
         }
         node.setParent(parent, false);
-        return node.getComponent(SkillProjectile) || node.addComponent(SkillProjectile);
+
+        const proj = node.getComponent(SkillProjectile) || node.addComponent(SkillProjectile);
+        if (pf) this.projOwner.set(proj, pf);
+        return proj;
     }
 
     private recycleProjectile(p: SkillProjectile) {
@@ -961,7 +1240,19 @@ export class CampBattle extends Component {
 
         p.stop();
         p.node.active = false;
-        this.projPool.push(p);
+
+        const pf = this.projOwner.get(p);
+        const list = pf ? this.projPools.get(pf) : null;
+        const capped = this.maxPooledPerPrefab > 0 && list && list.length >= this.maxPooledPerPrefab;
+
+        if (pf && list && !capped) {
+            list.push(p);
+            return;
+        }
+
+        // 没有归属 prefab（占位圆球）或池子满了 → 直接销毁
+        this.projOwner.delete(p);
+        p.node.destroy();
     }
 
     // ------------------------------------------------ 小兵对象池
@@ -983,13 +1274,19 @@ export class CampBattle extends Component {
 
     private recycle(unit: SoldierUnit) {
         unit.sleep();
+
         const pf = this.owner.get(unit);
         const list = pf ? this.pools.get(pf) : null;
-        if (list) {
+        const capped = this.maxPooledPerPrefab > 0 && list && list.length >= this.maxPooledPerPrefab;
+
+        if (list && !capped) {
             list.push(unit);
-        } else {
-            unit.node.destroy();
+            return;
         }
+
+        // 没有归属 prefab，或者池子已经满了：直接销毁，避免常驻节点越来越多
+        this.owner.delete(unit);
+        if (unit.node && unit.node.isValid) unit.node.destroy();
     }
 
     private clearPool() {
@@ -999,15 +1296,16 @@ export class CampBattle extends Component {
         this.pools.clear();
         this.owner.clear();
 
-        for (const p of this.projPool) p.node.destroy();
-        this.projPool.length = 0;
+        for (const list of this.projPools.values()) {
+            for (const p of list) {
+                if (p && p.node && p.node.isValid) p.node.destroy();
+            }
+        }
+        this.projPools.clear();
+        this.projOwner.clear();
         this.flights.length = 0;
 
-        this.slotUnits['-1'] = [];
-        this.slotUnits['1'] = [];
-        this.slotCap['-1'] = 0;
-        this.slotCap['1'] = 0;
-        this.rowTopY = null;
+        this.formation?.reset();
         this.slotFullWarned = false;
     }
 }

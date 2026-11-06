@@ -128,8 +128,8 @@
     },
     "flyAnim": "fly",
     "boomAnim": "boom",
-    "boomSeconds": 0.45,
-    "boomScale": 1.6,
+    "boomSeconds": 0.65,
+    "boomScale": 1,
     "_id": ""
   },
   {

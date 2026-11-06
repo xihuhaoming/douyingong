@@ -1,0 +1,92 @@
+[
+  {
+    "id": "gold",
+    "name": "摸金符",
+    "icon": "img/ui/tool_01",
+    "count": 1,
+    "damage": 60,
+    "radius": 240,
+    "shakeStrength": 14,
+    "shakeDuration": 0.32
+  },
+  {
+    "id": "elf",
+    "name": "仙女棒",
+    "icon": "img/ui/tool_02",
+    "count": 1,
+    "damage": 45,
+    "radius": 200,
+    "shakeStrength": 10,
+    "shakeDuration": 0.25
+  },
+  {
+    "id": "luoyangchan",
+    "name": "洛阳铲",
+    "icon": "img/ui/tool_03",
+    "count": 1,
+    "damage": 70,
+    "radius": 180,
+    "shakeStrength": 30,
+    "effect": "prefabs/fx/pf_tu_qiu",
+    "effectSeconds": 1.8,
+    "shakeBeats": [
+      { "time": 0.06, "strength": 12, "duration": 0.16 },
+      { "time": 0.24, "strength": 24, "duration": 0.26 }
+    ]
+  },
+  {
+    "id": "ghost",
+    "name": "通灵术",
+    "icon": "img/ui/tool_04",
+    "count": 1,
+    "damage": 55,
+    "radius": 260,
+    "shakeStrength": 12,
+    "shakeDuration": 0.3
+  },
+  {
+    "id": "jiulong",
+    "name": "九龙拉棺",
+    "icon": "img/ui/tool_05",
+    "count": 1,
+    "damage": 120,
+    "radius": 320,
+    "effect": "prefabs/fx/pf_jiulong_intro",
+    "effectSeconds": 1.8,
+    "anim": "",
+    "intro": "prefabs/fx/pf_jiulong_intro",
+    "introWidthRatio": 0.5,
+    "introHeightRatio": 0.5,
+    "introSeconds": 1.6,
+    "introDim": 0.35,
+    "shakeBeats": [
+      { "time": 0.08, "strength": 14, "duration": 0.16 },
+      { "time": 0.3, "strength": 26, "duration": 0.28 },
+      { "time": 0.62, "strength": 10, "duration": 0.22 }
+    ]
+  },
+  {
+    "id": "fire_ball",
+    "name": "火球术",
+    "icon": "img/ui/tool_06",
+    "count": 1,
+    "damage": 80,
+    "radius": 240,
+    "effect": "prefabs/fx/pf_fire_xuan",
+    "effectSeconds": 1.0,
+    "shakeBeats": [
+      { "time": 0.05, "strength": 10, "duration": 0.15 },
+      { "time": 0.28, "strength": 22, "duration": 0.26 }
+    ]
+  },
+  {
+    "id": "blood",
+    "name": "血祭",
+    "icon": "img/ui/tool_07",
+    "count": 1,
+    "damage": 90,
+    "radius": 220,
+    "shakeStrength": 18,
+    "shakeDuration": 0.35
+  }
+]

@@ -1,0 +1,110 @@
+
+E54014.png
+size: 1822,1580
+format: RGBA8888
+filter: Linear,Linear
+repeat: none
+guilongjuan_46
+  rotate: false
+  xy: 2, 2
+  size: 391, 207
+  orig: 499, 575
+  offset: 48, 27
+  index: -1
+guilongjuan_48
+  rotate: false
+  xy: 457, 2
+  size: 403, 387
+  orig: 499, 575
+  offset: 42, 25
+  index: -1
+guilongjuan_50
+  rotate: false
+  xy: 912, 2
+  size: 437, 476
+  orig: 499, 575
+  offset: 40, 23
+  index: -1
+guilongjuan_54
+  rotate: false
+  xy: 1367, 2
+  size: 453, 524
+  orig: 499, 575
+  offset: 38, 21
+  index: -1
+guilongjuan_58
+  rotate: false
+  xy: 2, 528
+  size: 438, 524
+  orig: 499, 575
+  offset: 36, 22
+  index: -1
+guilongjuan_62
+  rotate: false
+  xy: 457, 528
+  size: 414, 524
+  orig: 499, 575
+  offset: 37, 22
+  index: -1
+guilongjuan_66
+  rotate: false
+  xy: 912, 528
+  size: 414, 524
+  orig: 499, 575
+  offset: 38, 21
+  index: -1
+guilongjuan_70
+  rotate: false
+  xy: 1367, 528
+  size: 415, 520
+  orig: 499, 575
+  offset: 38, 22
+  index: -1
+guilongjuan_74
+  rotate: false
+  xy: 2, 1054
+  size: 413, 518
+  orig: 499, 575
+  offset: 38, 22
+  index: -1
+guilongjuan_78
+  rotate: false
+  xy: 457, 1054
+  size: 413, 514
+  orig: 499, 575
+  offset: 38, 22
+  index: -1
+guilongjuan_82
+  rotate: false
+  xy: 912, 1054
+  size: 413, 510
+  orig: 499, 575
+  offset: 38, 22
+  index: -1
+guilongjuan_86
+  rotate: false
+  xy: 1367, 1054
+  size: 416, 505
+  orig: 499, 575
+  offset: 38, 22
+  index: -1
+
+E540142.png
+size: 912,528
+format: RGBA8888
+filter: Linear,Linear
+repeat: none
+guilongjuan_90
+  rotate: false
+  xy: 2, 2
+  size: 413, 500
+  orig: 499, 575
+  offset: 38, 22
+  index: -1
+guilongjuan_94
+  rotate: false
+  xy: 457, 2
+  size: 313, 401
+  orig: 499, 575
+  offset: 78, 115
+  index: -1

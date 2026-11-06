@@ -1,0 +1,79 @@
+{
+"skeleton": { "hash": "8XXJV5J/2opaH2bxYfOpfDy3kOM", "spine": "3.8.75", "images": "G:\\work\\p图\\需要的特效\\E54014_hongse_xuan\\images", "audio": "J:/kp/人物/孟婆/孟婆输出/孟婆普攻/水受击" },
+"bones": [
+	{ "name": "root" },
+	{ "name": "guilongjuan_46", "parent": "root" }
+],
+"slots": [
+	{ "name": "guilongjuan_46", "bone": "guilongjuan_46" }
+],
+"skins": [
+	{
+		"name": "default",
+		"attachments": {
+			"guilongjuan_46": {
+				"guilongjuan_46": { "width": 499, "height": 575 },
+				"guilongjuan_48": { "x": 0.5, "y": 0.5, "width": 499, "height": 575 },
+				"guilongjuan_50": { "x": 0.5, "y": 0.5, "width": 499, "height": 575 },
+				"guilongjuan_54": { "x": 0.5, "y": 0.5, "width": 499, "height": 575 },
+				"guilongjuan_58": { "x": 0.5, "y": 0.5, "width": 499, "height": 575 },
+				"guilongjuan_62": { "x": 0.5, "y": 0.5, "width": 499, "height": 575 },
+				"guilongjuan_66": { "x": 0.5, "y": 0.5, "width": 499, "height": 575 },
+				"guilongjuan_70": { "x": 0.5, "y": 0.5, "width": 499, "height": 575 },
+				"guilongjuan_74": { "x": 0.5, "y": 0.5, "width": 499, "height": 575 },
+				"guilongjuan_78": { "x": 0.5, "y": 0.5, "width": 499, "height": 575 },
+				"guilongjuan_82": { "x": 0.5, "y": 0.5, "width": 499, "height": 575 },
+				"guilongjuan_86": { "x": 0.5, "y": 0.5, "width": 499, "height": 575 },
+				"guilongjuan_90": { "x": 0.5, "y": 0.5, "width": 499, "height": 575 },
+				"guilongjuan_94": { "x": 0.5, "y": 0.5, "width": 499, "height": 575 }
+			}
+		}
+	}
+],
+"events": {
+	"hit": {},
+	"hit_num2": {}
+},
+"animations": {
+	"action": {
+		"slots": {
+			"guilongjuan_46": {
+				"color": [
+					{ "time": 1.0667, "color": "ffffffff" },
+					{ "time": 1.4667, "color": "ffffff00" }
+				],
+				"attachment": [
+					{ "name": "guilongjuan_46" },
+					{ "time": 0.0667, "name": "guilongjuan_48" },
+					{ "time": 0.1333, "name": "guilongjuan_50" },
+					{ "time": 0.2, "name": "guilongjuan_54" },
+					{ "time": 0.2667, "name": "guilongjuan_58" },
+					{ "time": 0.3667, "name": "guilongjuan_62" },
+					{ "time": 0.4667, "name": "guilongjuan_66" },
+					{ "time": 0.5667, "name": "guilongjuan_70" },
+					{ "time": 0.6667, "name": "guilongjuan_74" },
+					{ "time": 0.7667, "name": "guilongjuan_78" },
+					{ "time": 0.8667, "name": "guilongjuan_82" },
+					{ "time": 0.9667, "name": "guilongjuan_86" },
+					{ "time": 1.0667, "name": "guilongjuan_90" },
+					{ "time": 1.1667, "name": "guilongjuan_94" },
+					{ "time": 1.4667, "name": null }
+				]
+			}
+		},
+		"bones": {
+			"guilongjuan_46": {
+				"translate": [
+					{ "y": 229.19 }
+				]
+			}
+		},
+		"events": [
+			{ "name": "hit_num2" },
+			{ "time": 0.2667, "name": "hit" },
+			{ "time": 0.6, "name": "hit" },
+			{ "time": 0.9333, "name": "hit" }
+		]
+	}
+}
+}

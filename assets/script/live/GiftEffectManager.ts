@@ -34,6 +34,9 @@ export class GiftEffectConfig {
 
     @property({ tooltip: '同屏最多同时几个' })
     maxAlive = 6;
+
+    @property({ tooltip: '要播的 spine 动画名（留空 = 用 prefab 上 Spine 组件配的默认动画）' })
+    anim = '';
 }
 
 /**
@@ -51,6 +54,9 @@ export class GiftEffectManager extends Component {
 
     @property({ tooltip: '不指定位置时，特效在屏幕中央附近散开的半径（px）' })
     scatterRadius = 180;
+
+    @property({ tooltip: '每种特效最多缓存几个（超出直接销毁，防止池子无限膨胀）' })
+    maxPooledPerPrefab = 12;
 
     private pools = new Map<Prefab, Node[]>();
     private owner = new Map<Node, Prefab>();
@@ -79,9 +85,9 @@ export class GiftEffectManager extends Component {
     };
 
     /** 播一个特效（公开接口）。worldPos 传世界坐标，不传就在中央附近随机散点 */
-    playPrefab(prefab: Prefab, worldPos?: Vec3, duration = 1.5, delay = 0) {
+    playPrefab(prefab: Prefab, worldPos?: Vec3, duration = 1.5, delay = 0, anim = '') {
         if (!prefab) return;
-        this.play({ giftId: '', label: '', prefab, duration, maxAlive: 99 }, delay, worldPos);
+        this.play({ giftId: '', label: '', prefab, duration, maxAlive: 99, anim }, delay, worldPos);
     }
 
     private play(cfg: GiftEffectConfig, delay = 0, worldPos?: Vec3) {
@@ -108,14 +114,14 @@ export class GiftEffectManager extends Component {
         node.setScale(1, 1, 1);
 
         if (delay > 0) {
-            this.scheduleOnce(() => this.fire(node, cfg.duration), delay);
+            this.scheduleOnce(() => this.fire(node, cfg.duration, cfg.anim), delay);
         } else {
-            this.fire(node, cfg.duration);
+            this.fire(node, cfg.duration, cfg.anim);
         }
     }
 
     /** 真正开始播：粒子 reset / 动画 play / Spine 播一遍 / 什么都没有就缩放脉冲兜底 */
-    private fire(node: Node, duration: number) {
+    private fire(node: Node, duration: number, animName = '') {
         node.active = true;
 
         const ps = node.getComponentInChildren(ParticleSystem2D);
@@ -129,12 +135,13 @@ export class GiftEffectManager extends Component {
         const SkeletonComp = (sp as unknown as typeof sp | undefined)?.Skeleton;
         const sk = SkeletonComp ? node.getComponentInChildren(SkeletonComp) : null;
         if (sk) {
-            const name = spineDefaultAnim(sk);
+            // 优先用调用方指定的动画名，其次用 prefab 上 Spine 组件配的默认动画
+            const name = animName || spineDefaultAnim(sk);
             if (name) {
                 sk.setToSetupPose();
                 sk.setAnimation(0, name, false);
             } else {
-                console.warn('[GiftEffect] Spine 特效没配默认动画：' + node.name);
+                console.warn('[GiftEffect] Spine 特效没有可用动画名：' + node.name);
             }
         }
 
@@ -170,7 +177,22 @@ export class GiftEffectManager extends Component {
         node.active = false;
         const c = this.alive.get(pf) || 0;
         this.alive.set(pf, Math.max(0, c - 1));
-        this.pools.get(pf)!.push(node);
+
+        const list = this.pools.get(pf);
+        if (!list) {
+            this.owner.delete(node);
+            node.destroy();
+            return;
+        }
+
+        // 池子满了就销毁，避免长期运行后缓存节点越来越多
+        if (this.maxPooledPerPrefab > 0 && list.length >= this.maxPooledPerPrefab) {
+            this.owner.delete(node);
+            node.destroy();
+            return;
+        }
+
+        list.push(node);
     }
 
     private clearPools() {

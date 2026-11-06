@@ -1,0 +1,55 @@
+
+1.png
+size: 1024,256
+format: RGBA8888
+filter: Linear,Linear
+repeat: none
+at_shouji_00000
+  rotate: false
+  xy: 729, 50
+  size: 158, 161
+  orig: 200, 184
+  offset: 21, 11
+  index: -1
+at_shouji_00001
+  rotate: false
+  xy: 570, 44
+  size: 157, 167
+  orig: 200, 184
+  offset: 21, 7
+  index: -1
+at_shouji_00002
+  rotate: false
+  xy: 395, 29
+  size: 173, 182
+  orig: 200, 184
+  offset: 13, 0
+  index: -1
+at_shouji_00003
+  rotate: false
+  xy: 2, 28
+  size: 195, 183
+  orig: 200, 184
+  offset: 0, 0
+  index: -1
+at_shouji_00004
+  rotate: false
+  xy: 199, 27
+  size: 194, 184
+  orig: 200, 184
+  offset: 5, 0
+  index: -1
+at_x_00000
+  rotate: false
+  xy: 2, 2
+  size: 192, 24
+  orig: 200, 28
+  offset: 4, 2
+  index: -1
+sk1_hongguang
+  rotate: false
+  xy: 889, 161
+  size: 50, 50
+  orig: 50, 50
+  offset: 0, 0
+  index: -1

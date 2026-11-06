@@ -172,6 +172,14 @@
     "__prefab": {
       "__id__": 9
     },
+    "attackSheet": {
+      "__uuid__": "eac9b160-524b-410b-8f35-5789401d1324@f9941",
+      "__expectedType__": "cc.SpriteFrame"
+    },
+    "attackFrameWidth": 0,
+    "attackFrameHeight": 0,
+    "attackFps": 12,
+    "attackLoop": true,
     "_id": ""
   },
   {
@@ -200,6 +208,9 @@
     "direction": 0,
     "loop": true,
     "totalFrames": 0,
+    "useGrid": false,
+    "gridColumns": 5,
+    "gridRows": 1,
     "playOnLoad": true,
     "startFromEndWhenReverse": true,
     "fitNodeSize": true,
