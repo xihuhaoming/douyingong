@@ -1264,11 +1264,14 @@ export class CampBattle extends Component {
                 list = [];
                 this.projPools.set(pf, list);
             }
-            const cached = list.pop();
-            if (cached) {
-                cached.node.active = true;
-                this.projOwner.set(cached, pf);
-                return cached;
+            // 跳过已销毁的残留节点
+            while (list.length) {
+                const c = list.pop();
+                if (c && c.node && c.node.isValid) {
+                    c.node.active = true;
+                    this.projOwner.set(c, pf);
+                    return c;
+                }
             }
         }
 
@@ -1317,16 +1320,29 @@ export class CampBattle extends Component {
             list = [];
             this.pools.set(pf, list);
         }
-        let unit = list.pop();
+        // 池里可能残留已销毁的节点，跳过它们再用
+        let unit: SoldierUnit | null = null;
+        while (list.length) {
+            const u = list.pop();
+            if (u && u.node && u.node.isValid) {
+                unit = u;
+                break;
+            }
+        }
+
         if (!unit) {
             const node = instantiate(pf);
             unit = node.getComponent(SoldierUnit) || node.addComponent(SoldierUnit);
         }
+
         this.owner.set(unit, pf);
         return unit;
     }
 
     private recycle(unit: SoldierUnit) {
+        // 延迟回池（死亡动画播完）期间节点可能已经被销毁，这里挡一下
+        if (!unit || !unit.node || !unit.node.isValid) return;
+
         unit.sleep();
 
         const pf = this.owner.get(unit);

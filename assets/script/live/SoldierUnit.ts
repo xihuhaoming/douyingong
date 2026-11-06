@@ -331,7 +331,7 @@ export class SoldierUnit extends Component {
         const sp = this.getSprite();
         if (sp) sp.color.set(140, 140, 140, 255);
         const op = this.getOpacity();
-        op.opacity = 255;
+        if (op) op.opacity = 255;
 
         tween(n)
             .by(
@@ -411,12 +411,17 @@ export class SoldierUnit extends Component {
     }
 
     private getSprite(): Sprite | null {
-        if (!this.sprite) this.sprite = this.node.getComponentInChildren(Sprite);
+        // 节点被销毁后 this.node 会是 null，这里必须挡一下（回收/延迟回调时会走到）
+        if (!this.node || !this.node.isValid) return null;
+        if (!this.sprite || !this.sprite.isValid) {
+            this.sprite = this.node.getComponentInChildren(Sprite);
+        }
         return this.sprite;
     }
 
-    private getOpacity(): UIOpacity {
-        if (!this.opacity) {
+    private getOpacity(): UIOpacity | null {
+        if (!this.node || !this.node.isValid) return null;
+        if (!this.opacity || !this.opacity.isValid) {
             this.opacity = this.node.getComponent(UIOpacity) || this.node.addComponent(UIOpacity);
         }
         return this.opacity;

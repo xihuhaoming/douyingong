@@ -97,9 +97,12 @@ export class GiftEffectManager extends Component {
 
         const cnt = this.alive.get(pf) || 0;
         if (cnt >= cfg.maxAlive) return;
-        this.alive.set(pf, cnt + 1);
 
         const node = this.take(pf);
+        // 池里可能混进已被销毁的节点，取不到就放弃这一发，别让整场战斗崩掉
+        if (!node || !node.isValid) return;
+
+        this.alive.set(pf, cnt + 1);
         node.setParent(root, false);
         node.active = false; // delay 期间先藏着
 
@@ -122,6 +125,9 @@ export class GiftEffectManager extends Component {
 
     /** 真正开始播：粒子 reset / 动画 play / Spine 播一遍 / 什么都没有就缩放脉冲兜底 */
     private fire(node: Node, duration: number, animName = '') {
+        // 延迟播放期间场景可能已经切走，节点已销毁时直接跳过
+        if (!node || !node.isValid) return;
+
         node.active = true;
 
         const ps = node.getComponentInChildren(ParticleSystem2D);
@@ -156,18 +162,35 @@ export class GiftEffectManager extends Component {
         this.scheduleOnce(() => this.back(node), Math.max(0.2, duration));
     }
 
-    private take(pf: Prefab): Node {
+    private take(pf: Prefab): Node | null {
         let list = this.pools.get(pf);
         if (!list) {
             list = [];
             this.pools.set(pf, list);
         }
-        const node = list.pop() || instantiate(pf);
+
+        // 池里可能混着已销毁的节点（切场景、超上限销毁等），跳过它们
+        let node: Node | null = null;
+        while (list.length) {
+            const n = list.pop();
+            if (n && n.isValid) {
+                node = n;
+                break;
+            }
+        }
+
+        if (!node) {
+            if (!pf || !pf.isValid) return null;
+            node = instantiate(pf);
+        }
+
         this.owner.set(node, pf);
         return node;
     }
 
     private back(node: Node) {
+        if (!node || !node.isValid) return;
+
         const pf = this.owner.get(node);
         if (!pf) {
             node.destroy();
