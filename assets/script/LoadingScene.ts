@@ -4,6 +4,35 @@ import { sidebarHelper } from './DouyinSidebar';
 const { ccclass, property } = _decorator;
 
 /**
+ * 抖音小游戏环境兜底：补上 requestAnimationFrame / cancelAnimationFrame。
+ *
+ * Cocos 的 spine 在节点激活时会用 rAF「延迟一帧」请求骨架数据
+ * （requestSkeletonDataFrame），抖音运行时全局不一定暴露 rAF，
+ * 缺了就会抛：Cannot read property 'requestAnimationFrame' of undefined，
+ * 表现就是「一有 spine 特效被激活就满屏报错」。
+ *
+ * 只在缺失时补，浏览器里原生 rAF 存在，不会被覆盖。
+ */
+function patchRaf(scope: any) {
+    if (!scope) return;
+
+    if (typeof scope.requestAnimationFrame !== 'function') {
+        scope.requestAnimationFrame = (cb: (t: number) => void) =>
+            setTimeout(() => cb(Date.now()), 16) as unknown as number;
+    }
+    if (typeof scope.cancelAnimationFrame !== 'function') {
+        scope.cancelAnimationFrame = (id: number) => clearTimeout(id);
+    }
+}
+
+const GLOBAL_SCOPE: any = typeof globalThis !== 'undefined' ? (globalThis as any) : {};
+patchRaf(GLOBAL_SCOPE);
+// 引擎里有些路径走的是 window.requestAnimationFrame
+if (GLOBAL_SCOPE.window && GLOBAL_SCOPE.window !== GLOBAL_SCOPE) {
+    patchRaf(GLOBAL_SCOPE.window);
+}
+
+/**
  * Loading 场景的入口脚本：预加载目标场景，进度条走满后自动切过去。
  *
  * 挂在 loading 场景的 Canvas 上即可，ProgressBar 会自动在子节点里找
@@ -63,6 +92,12 @@ export class LoadingScene extends Component {
     private launched = false;
 
     onLoad() {
+        // 再补一次（幂等）：万一运行时把全局对象重置了
+        patchRaf(GLOBAL_SCOPE);
+        if (GLOBAL_SCOPE.window && GLOBAL_SCOPE.window !== GLOBAL_SCOPE) {
+            patchRaf(GLOBAL_SCOPE.window);
+        }
+
         // 侧边栏复访是抖音必接能力，onShow 必须**尽早**注册（晚了收不到从侧边栏返回的回调）。
         // 放在全游戏的第一帧，比任何玩法脚本都早。
         sidebarHelper.init();

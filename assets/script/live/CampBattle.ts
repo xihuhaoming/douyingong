@@ -302,10 +302,7 @@ export class CampBattle extends Component {
     @property({ group: { name: '表现 / UI', id: 'view' }, type: DamageTextLayer, tooltip: '伤害飘字层（可空，不配就不飘数字）' })
     damageText: DamageTextLayer | null = null;
 
-    @property({ group: { name: '表现 / UI', id: 'view' }, type: Prefab, tooltip: '技能命中特效 prefab（可空）' })
-    hitEffect: Prefab | null = null;
-
-    @property({ group: { name: '表现 / UI', id: 'view' }, type: Prefab, tooltip: '死亡特效 prefab（可空）' })
+    @property({ group: { name: '表现 / UI', id: 'view' }, type: Prefab, tooltip: '死亡特效 prefab（可空，留空走代码特效）' })
     deathEffect: Prefab | null = null;
 
     @property({ group: { name: '表现 / UI', id: 'view' }, type: Prefab, tooltip: '点击助力时指尖爆点特效（可空）' })
@@ -1001,22 +998,20 @@ export class CampBattle extends Component {
             if (g.hp <= 0) dead.push(g);
         }
 
-        // 爆炸优先级：本方的独立爆炸 prefab → 弹体自身 boom 动画 → 老 hitEffect
+        // 命中表现只有两条路（不再有第三套）：
+        //   1. 配了 Left/Right Boom Prefab **且** 配了 GiftEffectManager → 播它，弹体立刻回收
+        //   2. 其余情况 → 用代码画的命中特效（FxLayer），绝不静默丢弃
         const boomPrefab = this.boomPrefabFor(fl.side);
-        if (boomPrefab) {
+        if (boomPrefab && this.fx) {
             const seconds = Math.max(0.2, fl.side > 0 ? this.rightBoomSeconds : this.leftBoomSeconds);
             const anim = fl.side > 0 ? this.rightBoomAnim : this.leftBoomAnim;
-            this.fx?.playPrefab(boomPrefab, at.clone(), seconds, 0, anim);
+            this.fx.playPrefab(boomPrefab, at.clone(), seconds, 0, anim);
             this.recycleProjectile(fl.proj);
             return;
         }
 
-        if (this.hitEffect) {
-            this.fx?.playPrefab(this.hitEffect, at.clone(), 0.6);
-        } else {
-            const k = clamp(fl.damage / Math.max(1, this.damageMax), 0, 1);
-            this.getFxLayer().playHit(at.clone(), this.hitColor(k), 0.85 + k * 0.6);
-        }
+        const k = clamp(fl.damage / Math.max(1, this.damageMax), 0, 1);
+        this.getFxLayer().playHit(at.clone(), this.hitColor(k), 0.85 + k * 0.6);
 
         // 弹体本身带爆炸动画（Spine）就先留在原地播完，再回对象池
         const boom = fl.proj.playBoom();
@@ -1030,8 +1025,8 @@ export class CampBattle extends Component {
     private killFighters(dead: Fighter[]) {
         for (const f of dead) {
             if (!this.removeFighter(f)) continue; // 同一帧被两颗弹重复命中的话只结算一次
-            if (this.deathEffect) {
-                this.fx?.playPrefab(this.deathEffect, f.unit.node.worldPosition.clone(), 0.8);
+            if (this.deathEffect && this.fx) {
+                this.fx.playPrefab(this.deathEffect, f.unit.node.worldPosition.clone(), 0.8);
             } else {
                 this.getFxLayer().playDeath(f.unit.node.worldPosition.clone());
             }
@@ -1130,10 +1125,10 @@ export class CampBattle extends Component {
             if (g.hp <= 0) dead.push(g);
         }
 
-        if (effect) {
-            this.fx?.playPrefab(effect, at.clone(), effectSeconds, 0, effectAnim);
-        } else if (this.hitEffect) {
-            this.fx?.playPrefab(this.hitEffect, at.clone(), 0.6);
+        // 道具技能：配了 effect prefab **且** 配了 GiftEffectManager 才播 prefab，
+        // 否则一律用代码特效兜底（不然 fx 没拖时就是"什么都不显示"）
+        if (effect && this.fx) {
+            this.fx.playPrefab(effect, at.clone(), effectSeconds, 0, effectAnim);
         } else {
             const k = clamp(damage / Math.max(1, this.damageMax), 0, 1);
             this.getFxLayer().playHit(at.clone(), this.hitColor(k), 0.9 + k * 0.6);
@@ -1227,7 +1222,7 @@ export class CampBattle extends Component {
         return (side > 0 ? this.rightProjectilePrefab : this.leftProjectilePrefab) || this.projectilePrefab;
     }
 
-    /** 这一方用哪个爆炸 prefab（没配返回 null → 走弹体自身的 boom 动画 / hitEffect） */
+    /** 这一方用哪个爆炸 prefab（没配返回 null → 走代码特效 FxLayer） */
     private boomPrefabFor(side: number): Prefab | null {
         return side > 0 ? this.rightBoomPrefab : this.leftBoomPrefab;
     }

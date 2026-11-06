@@ -13,6 +13,7 @@ import {
     Tween,
     UIOpacity,
     UITransform,
+    Vec3,
     view,
 } from 'cc';
 import { SpriteSheetAnimation } from '../SpriteSheetAnimation';
@@ -84,6 +85,16 @@ export class SkillIntro extends Component {
     /** 当前动效里的 Spine（有的话，结束时要停掉轨道） */
     private skeleton: sp.Skeleton | null = null;
 
+    @property({ tooltip: '每个动效 prefab 最多缓存几个（全屏动效同时只会有一个，2 就够）' })
+    maxPooled = 2;
+
+    /** 动效节点池：按 prefab 分池，避免每次点大招都 instantiate 一个 spine */
+    private pools = new Map<Prefab, Node[]>();
+    /** 节点 → 它来自哪个 prefab（回池时用） */
+    private owner = new Map<Node, Prefab>();
+    /** 每个 prefab 的原始缩放（复用时要还原，否则会带着上次的缩放） */
+    private baseScales = new Map<Prefab, Vec3>();
+
     get isPlaying(): boolean {
         return this.playing;
     }
@@ -117,13 +128,25 @@ export class SkillIntro extends Component {
         this.playing = true;
         this.showDim(dim);
 
-        const node = instantiate(prefab);
+        const node = this.take(prefab);
+        if (!node) return;
+
         node.layer = root.layer;
         node.setParent(root, false);
         node.setPosition(0, 0, 0);
         node.setSiblingIndex(root.children.length - 1);
-        this.current = node;
+        node.active = true;
+        node.angle = 0;
 
+        // 还原成 prefab 的原始缩放（复用节点会带着上次算出来的缩放）
+        let base = this.baseScales.get(prefab);
+        if (!base) {
+            base = node.scale.clone();
+            this.baseScales.set(prefab, base);
+        }
+        node.setScale(base.x, base.y, base.z);
+
+        this.current = node;
         this.skeleton = null;
         this.fitIntoBox(node, wRatio, hRatio);
         this.playAnimation(node);
@@ -150,8 +173,8 @@ export class SkillIntro extends Component {
         this.stopSkeleton();
 
         const node = this.current;
-        if (node && node.isValid) node.destroy();
         this.current = null;
+        if (node && node.isValid) this.release(node);
 
         this.hideDim(true);
         this.playing = false;
@@ -163,6 +186,17 @@ export class SkillIntro extends Component {
 
     onDestroy() {
         this.cancel();
+
+        // 场景销毁：池里的节点统一清掉
+        for (const list of this.pools.values()) {
+            for (const n of list) {
+                if (n && n.isValid) n.destroy();
+            }
+        }
+        this.pools.clear();
+        this.owner.clear();
+        this.baseScales.clear();
+
         if (this.dimNode && this.dimNode.isValid) this.dimNode.destroy();
         this.dimNode = null;
         this.dimOp = null;
@@ -210,7 +244,9 @@ export class SkillIntro extends Component {
 
         // 全屏大招通常是纯 spine prefab：播它 Inspector 上配的默认动画（只播一次）
         const SkeletonComp = SP ? SP.Skeleton : null;
-        const sk = SkeletonComp ? node.getComponentInChildren(SkeletonComp) : null;
+        const found = SkeletonComp ? node.getComponentInChildren(SkeletonComp) : null;
+        // 组件被销毁后内部 node 为 null，直接调它的方法会抛错
+        const sk = found && found.isValid && found.node && found.node.isValid ? found : null;
         if (!sk) return;
 
         const anySk = sk as unknown as { defaultAnimation?: string; animation?: string };
@@ -235,6 +271,9 @@ export class SkillIntro extends Component {
         this.skeleton = null;
         if (!sk || !sk.isValid) return;
 
+        const n = sk.node;
+        if (!n || !n.isValid) return;
+
         sk.setToSetupPose();
         sk.clearTracks();
     }
@@ -258,12 +297,72 @@ export class SkillIntro extends Component {
             .to(Math.max(0.05, this.fadeOut), { opacity: 0 })
             .call(() => {
                 this.stopSkeleton();
-                if (node.isValid) node.destroy();
                 if (this.current === node) this.current = null;
+                this.release(node);
                 this.hideDim();
                 this.playing = false;
             })
             .start();
+    }
+
+    // ------------------------------------------------ 节点池
+
+    /** 取一个动效节点：池里有就复用，没有才实例化 */
+    private take(prefab: Prefab): Node | null {
+        let list = this.pools.get(prefab);
+        if (!list) {
+            list = [];
+            this.pools.set(prefab, list);
+        }
+
+        let node: Node | null = null;
+        while (list.length) {
+            const n = list.pop();
+            if (n && n.isValid) {
+                node = n;
+                break;
+            }
+        }
+
+        if (!node) {
+            if (!prefab || !prefab.isValid) return null;
+            node = instantiate(prefab);
+        }
+
+        this.owner.set(node, prefab);
+        return node;
+    }
+
+    /** 播完回池（不销毁），池满了才真销毁 */
+    private release(node: Node) {
+        if (!node || !node.isValid) return;
+
+        Tween.stopAllByTarget(node);
+        const op = node.getComponent(UIOpacity);
+        if (op && op.isValid) {
+            Tween.stopAllByTarget(op);
+            op.opacity = 0;
+        }
+
+        // 先隐藏再回池，避免复用前那一帧还显示着
+        node.active = false;
+
+        const pf = this.owner.get(node);
+        const list = pf ? this.pools.get(pf) : null;
+
+        if (!list) {
+            this.owner.delete(node);
+            node.destroy();
+            return;
+        }
+
+        if (this.maxPooled > 0 && list.length >= this.maxPooled) {
+            this.owner.delete(node);
+            node.destroy();
+            return;
+        }
+
+        list.push(node);
     }
 
     /** 压暗层：懒创建，铺满屏幕的黑色矩形 */

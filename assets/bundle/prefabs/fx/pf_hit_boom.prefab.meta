@@ -2,12 +2,12 @@
   "ver": "1.1.50",
   "importer": "prefab",
   "imported": true,
-  "uuid": "41fb6257-8cb3-47ac-801b-c017f2747252",
+  "uuid": "3c6e8cb0-5fe5-448f-abd3-aaee4df124c7",
   "files": [
     ".json"
   ],
   "subMetas": {},
   "userData": {
-    "syncNodeName": "pf_FxHit"
+    "syncNodeName": "pf_hit_boom"
   }
 }

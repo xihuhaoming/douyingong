@@ -116,10 +116,20 @@ export class GiftEffectManager extends Component {
         }
         node.setScale(1, 1, 1);
 
-        if (delay > 0) {
-            this.scheduleOnce(() => this.fire(node, cfg.duration, cfg.anim), delay);
-        } else {
+        const start = () => {
+            // 延迟期间节点被销毁（切场景等）：把占用的名额还回去，
+            // 否则 alive 只增不减，打一会儿就再也不播特效了
+            if (!node || !node.isValid) {
+                this.releaseAlive(pf);
+                return;
+            }
             this.fire(node, cfg.duration, cfg.anim);
+        };
+
+        if (delay > 0) {
+            this.scheduleOnce(start, delay);
+        } else {
+            start();
         }
     }
 
@@ -139,7 +149,12 @@ export class GiftEffectManager extends Component {
         // Spine 特效：播 prefab 上 Spine 组件配的默认动画（只播一遍，不循环）
         // Spine 模块被功能裁剪掉时 cc.sp 是 undefined，这里不能直接取
         const SkeletonComp = (sp as unknown as typeof sp | undefined)?.Skeleton;
-        const sk = SkeletonComp ? node.getComponentInChildren(SkeletonComp) : null;
+        const found = SkeletonComp ? node.getComponentInChildren(SkeletonComp) : null;
+
+        // spine 组件被销毁后内部 this.node 会是 null，再调用就抛
+        // "Cannot read property 'getComponentInChildren' of null"，所以这里先验活
+        const sk = found && found.isValid && found.node && found.node.isValid ? found : null;
+
         if (sk) {
             // 优先用调用方指定的动画名，其次用 prefab 上 Spine 组件配的默认动画
             const name = animName || spineDefaultAnim(sk);
@@ -188,18 +203,27 @@ export class GiftEffectManager extends Component {
         return node;
     }
 
+    /** alive 计数 -1（不会低于 0） */
+    private releaseAlive(pf: Prefab) {
+        const c = this.alive.get(pf) || 0;
+        this.alive.set(pf, Math.max(0, c - 1));
+    }
+
     private back(node: Node) {
+        const pf = node && node.isValid ? this.owner.get(node) : null;
+
+        // 不管节点还在不在，先把名额还回去，杜绝"越打特效越少"
+        if (pf) this.releaseAlive(pf);
+
         if (!node || !node.isValid) return;
 
-        const pf = this.owner.get(node);
         if (!pf) {
             node.destroy();
             return;
         }
+
         Tween.stopAllByTarget(node);
         node.active = false;
-        const c = this.alive.get(pf) || 0;
-        this.alive.set(pf, Math.max(0, c - 1));
 
         const list = this.pools.get(pf);
         if (!list) {

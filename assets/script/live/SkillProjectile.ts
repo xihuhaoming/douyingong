@@ -33,6 +33,18 @@ export function spineDefaultAnim(sk: sp.Skeleton | null): string {
 }
 
 /**
+ * 取一个还活着的 spine 组件。
+ * 节点被销毁后组件内部的 this.node 会变成 null，
+ * 此时再调 setToSetupPose / setAnimation 会抛
+ * "Cannot read property 'getComponentInChildren' of null"。
+ */
+export function aliveSkeleton(sk: sp.Skeleton | null): sp.Skeleton | null {
+    if (!sk || !sk.isValid) return null;
+    const n = sk.node;
+    return n && n.isValid ? sk : null;
+}
+
+/**
  * 抛物线技能弹体（表现层）。
  *
  * 只负责「按时间在空中画一条抛物轨迹」，不负责命中判定——
@@ -128,9 +140,10 @@ export class SkillProjectile extends Component {
         this.booming = false;
         this.node.setScale(this.baseScale);
 
-        if (this.skeleton) {
-            this.skeleton.setToSetupPose();
-            this.skeleton.clearTracks();
+        const sk = aliveSkeleton(this.skeleton);
+        if (sk) {
+            sk.setToSetupPose();
+            sk.clearTracks();
         }
     }
 
@@ -139,7 +152,8 @@ export class SkillProjectile extends Component {
      * 返回「多久之后才能回收这个节点」（秒）；没有爆炸动画就返回 0，调用方立刻回池。
      */
     playBoom(): number {
-        if (!this.skeleton || !this.boomAnim) return 0;
+        const sk = aliveSkeleton(this.skeleton);
+        if (!sk || !this.boomAnim) return 0;
 
         this.booming = true;
         this.node.setScale(
@@ -147,14 +161,14 @@ export class SkillProjectile extends Component {
             this.baseScale.y * this.boomScale,
             this.baseScale.z,
         );
-        this.skeleton.setToSetupPose();
-        this.skeleton.setAnimation(0, this.boomAnim, false);
+        sk.setToSetupPose();
+        sk.setAnimation(0, this.boomAnim, false);
         return Math.max(0.1, this.boomSeconds);
     }
 
     /** 飞行时循环播 flyAnim（没填就用 prefab 上 Spine 组件的默认动画） */
     private playFly() {
-        const sk = this.skeleton;
+        const sk = aliveSkeleton(this.skeleton);
         if (!sk) return;
 
         const name = this.flyAnim || spineDefaultAnim(sk);
